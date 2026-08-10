@@ -18,6 +18,7 @@ import (
 	"runway/backend/internal/httpapi"
 	"runway/backend/internal/ledger"
 	"runway/backend/internal/postgres"
+	"runway/backend/internal/schedule"
 )
 
 func main() {
@@ -54,11 +55,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	futureCash, err := schedule.NewService(postgres.NewScheduleRepository(pool), schedule.ServiceOptions{})
+	if err != nil {
+		return err
+	}
 
 	address := net.JoinHostPort(configuration.Host, configuration.Port)
 	server := &http.Server{
 		Addr: address,
-		Handler: httpapi.NewHandler(authentication, financialLedger, httpapi.AuthConfig{
+		Handler: httpapi.NewHandler(authentication, financialLedger, futureCash, httpapi.AuthConfig{
 			AllowedOrigin:        configuration.ApplicationOrigin,
 			CookieSecure:         configuration.CookieSecure,
 			SessionMaxAgeSeconds: int(configuration.SessionDuration / time.Second),

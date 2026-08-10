@@ -25,7 +25,8 @@ func TestMigrationsApplyCleanlyAndIdempotently(t *testing.T) {
 
 	for _, table := range []string{
 		"schema_migrations", "owners", "auth_sessions", "accounts", "linked_transfers",
-		"financial_transactions", "balance_snapshots", "financial_mutations",
+		"financial_transactions", "balance_snapshots", "financial_mutations", "obligations",
+		"scheduled_cash_flows", "receivables", "receivable_collections",
 	} {
 		var exists bool
 		if err := pool.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil {
@@ -39,8 +40,8 @@ func TestMigrationsApplyCleanlyAndIdempotently(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Fatalf("migration count = %d, want 3", migrationCount)
+	if migrationCount != 5 {
+		t.Fatalf("migration count = %d, want 5", migrationCount)
 	}
 }
 

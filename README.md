@@ -164,8 +164,31 @@ curl -sS -b /tmp/runway-cookies.txt \
 
 The API also supports listing and archiving accounts, listing immutable posted transactions, and creating reconciled balance snapshots. There are no edit or delete transaction endpoints.
 
+## Future commitments API
+
+Issue 6 adds owner-scoped obligations, manual scheduled cash flows, and receivables. Their mutating endpoints require the same `Origin` and `Idempotency-Key` headers as ledger mutations. Obligation occurrences are derived on demand and are never persisted as scheduled-flow rows in Issue 6:
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: car-obligation-001' \
+  --data '{"name":"Car payment","amount_minor":226400,"currency":"MXN","recurrence":"biweekly","start_date":"2026-08-16","end_date":null}' \
+  http://127.0.0.1:8080/api/v1/obligations
+
+curl -sS -b /tmp/runway-cookies.txt \
+  'http://127.0.0.1:8080/api/v1/obligations/OBLIGATION_ID/occurrences?from=2026-08-01&to=2026-09-30'
+
+curl -sS -b /tmp/runway-cookies.txt \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: archive-car-001' \
+  --data '{"inactive_from":"2026-08-20"}' \
+  http://127.0.0.1:8080/api/v1/obligations/OBLIGATION_ID/archive
+```
+
+`inactive_from` is the first suppressed financial date: earlier occurrences remain reproducible after archival. Expansion returns at most 1,000 occurrences and rejects larger requests. Monthly obligations retain their original day and clamp only in shorter months, so January 31 expands to February 28/29 and then March 31. Projection code must derive obligation occurrences directly and must not also load persisted obligation flows. An undated receivable is created with `"expected_date": null`; no date is inferred. Recording a collection updates receivable progress but does not automatically post a ledger transaction. An optional compatible ledger inflow ID may link the two records explicitly.
+
 ## Project status
 
-Issue 5 adds owner-scoped accounts, immutable posted transactions, deterministic ledger sequences, reconciled balance snapshots, current account balance reconstruction, and atomic linked transfers. Credit-card statements, obligations, forecasting, safe-to-spend calculations, AI integration, CI/CD, and production deployment are **not implemented**.
+Issues 5 and 6 provide the owner-scoped posted ledger plus future obligations, scheduled cash flows, and receivables. ProjectionPolicy, forecasting, safe-to-spend calculations, credit-card statements, MSI, AI integration, CI/CD, and production deployment are **not implemented**.
 
 Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).

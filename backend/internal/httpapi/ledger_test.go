@@ -20,7 +20,7 @@ import (
 
 func TestLedgerEndpointsRequireAuthenticationAndExactOrigin(t *testing.T) {
 	financial := &fakeLedger{}
-	unauthenticated := NewHandler(&fakeAuthentication{}, financial, AuthConfig{AllowedOrigin: testOrigin})
+	unauthenticated := NewHandler(&fakeAuthentication{}, financial, nil, AuthConfig{AllowedOrigin: testOrigin})
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/accounts", nil)
 	response := httptest.NewRecorder()
 	unauthenticated.ServeHTTP(response, request)
@@ -363,7 +363,7 @@ func newAuthenticatedLedgerHandler(financial LedgerService) http.Handler {
 		}
 		return owner, nil
 	}}
-	return NewHandler(authentication, financial, AuthConfig{AllowedOrigin: testOrigin})
+	return NewHandler(authentication, financial, nil, AuthConfig{AllowedOrigin: testOrigin})
 }
 
 func ledgerJSONRequest(method, path, body string) *http.Request {

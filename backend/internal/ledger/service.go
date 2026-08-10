@@ -124,7 +124,7 @@ func (s *Service) PostTransaction(
 	}
 	return s.repository.PostManualTransaction(ctx, ownerID, ManualTransactionDraft{
 		ID: id, AccountID: accountID, Amount: amount, Effect: effect, FinancialDate: date, Memo: memo, CreatedAt: s.clock().UTC(),
-		Mutation: MutationIdentity{Key: idempotencyKey, Fingerprint: canonicalFingerprint(
+		Mutation: MutationIdentity{Key: idempotencyKey, Fingerprint: CanonicalFingerprint(
 			"v1", "post_transaction", ownerID, accountID, effect.String(), strconv.FormatInt(amount.MinorUnits(), 10),
 			amount.Currency().Code(), date.String(), memo,
 		)},
@@ -166,7 +166,7 @@ func (s *Service) CreateSnapshot(
 	}
 	return s.repository.CreateSnapshot(ctx, snapshot, MutationIdentity{
 		Key: idempotencyKey,
-		Fingerprint: canonicalFingerprint(
+		Fingerprint: CanonicalFingerprint(
 			"v1", "create_snapshot", ownerID, accountID, strconv.FormatInt(balance.MinorUnits(), 10), balance.Currency().Code(),
 			effectiveAt.UTC().Format(time.RFC3339Nano), strconv.FormatInt(cutoffSequence, 10),
 		),
@@ -229,7 +229,7 @@ func (s *Service) CreateTransfer(
 	}
 	return s.repository.CreateTransfer(ctx, ownerID, TransferDraft{
 		Transfer: transfer, SourceTransactionID: sourceTransactionID, DestinationTransactionID: destinationTransactionID,
-		Mutation: MutationIdentity{Key: idempotencyKey, Fingerprint: canonicalFingerprint(
+		Mutation: MutationIdentity{Key: idempotencyKey, Fingerprint: CanonicalFingerprint(
 			"v1", "create_transfer", ownerID, sourceAccountID, destinationAccountID, strconv.FormatInt(amount.MinorUnits(), 10),
 			amount.Currency().Code(), date.String(), transfer.Memo(),
 		)},
@@ -277,7 +277,10 @@ func ReconstructBalance(state BalanceState) (BalanceResult, error) {
 	return result, nil
 }
 
-func canonicalFingerprint(parts ...string) [32]byte {
+// CanonicalFingerprint hashes a length-prefixed sequence of canonical fields.
+// It is shared by owner-scoped financial mutation modules so they reuse one
+// idempotency representation without depending on raw JSON formatting.
+func CanonicalFingerprint(parts ...string) [32]byte {
 	hash := sha256.New()
 	var length [8]byte
 	for _, part := range parts {
