@@ -1,10 +1,13 @@
-.PHONY: backend-run backend-test frontend-dev frontend-test frontend-build db-up db-down db-config
+.PHONY: backend-run backend-test backend-test-db frontend-dev frontend-test frontend-build db-up db-down db-config db-migrate owner-bootstrap
 
 backend-run:
-	cd backend && go run ./cmd/api
+	set -a; . ./.env; set +a; cd backend && go run ./cmd/api
 
 backend-test:
 	cd backend && go test ./...
+
+backend-test-db:
+	set -a; . ./.env; set +a; export TEST_DATABASE_URL="$$DATABASE_URL"; cd backend && go test ./internal/postgres -count=1
 
 frontend-dev:
 	npm --prefix frontend run dev
@@ -23,3 +26,10 @@ db-down:
 
 db-config:
 	docker compose --env-file .env config
+
+db-migrate:
+	set -a; . ./.env; set +a; cd backend && go run ./cmd/migrate
+
+owner-bootstrap:
+	@test -n "$(EMAIL)" || (echo "usage: make owner-bootstrap EMAIL=owner@example.com"; exit 2)
+	set -a; . ./.env; set +a; cd backend && go run ./cmd/bootstrap -email "$(EMAIL)"

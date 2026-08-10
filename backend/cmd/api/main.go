@@ -12,7 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"runway/backend/internal/auth"
+	"runway/backend/internal/auth/password"
+	"runway/backend/internal/config"
 	"runway/backend/internal/httpapi"
+	"runway/backend/internal/postgres"
 )
 
 func main() {
@@ -22,13 +26,38 @@ func main() {
 }
 
 func run() error {
-	host := envOrDefault("HOST", "127.0.0.1")
-	port := envOrDefault("PORT", "8080")
-	address := net.JoinHostPort(host, port)
+	configuration, err := config.LoadAPI()
+	if err != nil {
+		return err
+	}
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStartup()
+	pool, err := postgres.Open(startupContext, configuration.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	hasher, err := password.NewArgon2id(password.DefaultParameters())
+	if err != nil {
+		return errors.New("initialize password hashing")
+	}
+	authentication, err := auth.NewService(
+		postgres.NewAuthRepository(pool),
+		hasher,
+		auth.ServiceOptions{SessionDuration: configuration.SessionDuration},
+	)
+	if err != nil {
+		return err
+	}
 
+	address := net.JoinHostPort(configuration.Host, configuration.Port)
 	server := &http.Server{
-		Addr:              address,
-		Handler:           httpapi.NewHandler(),
+		Addr: address,
+		Handler: httpapi.NewHandler(authentication, httpapi.AuthConfig{
+			AllowedOrigin:        configuration.ApplicationOrigin,
+			CookieSecure:         configuration.CookieSecure,
+			SessionMaxAgeSeconds: int(configuration.SessionDuration / time.Second),
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -67,11 +96,4 @@ func run() error {
 
 	log.Printf("Runway API stopped")
 	return nil
-}
-
-func envOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
 }

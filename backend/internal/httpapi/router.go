@@ -1,20 +1,30 @@
 package httpapi
 
 import (
-	"encoding/json"
+	"context"
 	"net/http"
+
+	"runway/backend/internal/auth"
 )
 
-// NewHandler returns the HTTP API handler. Only service health is exposed
-// until later issues introduce application capabilities.
-func NewHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", health)
-	return mux
+type AuthenticationService interface {
+	Login(context.Context, string, string) (auth.LoginResult, error)
+	Authenticate(context.Context, string) (auth.Owner, error)
+	Logout(context.Context, string) error
 }
 
-func health(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+type AuthConfig struct {
+	AllowedOrigin        string
+	CookieSecure         bool
+	SessionMaxAgeSeconds int
+}
+
+func NewHandler(authentication AuthenticationService, authConfig AuthConfig) http.Handler {
+	handler := authHandler{authentication: authentication, config: authConfig}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("POST /api/v1/auth/login", handler.login)
+	mux.HandleFunc("POST /api/v1/auth/logout", handler.logout)
+	mux.HandleFunc("GET /api/v1/auth/me", handler.me)
+	return mux
 }
