@@ -1,0 +1,21 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Go
+backend/bin/
+backend/coverage.out
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+*.tsbuildinfo
+
+# Logs and editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
