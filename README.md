@@ -126,8 +126,46 @@ make frontend-dev
 
 Open `http://127.0.0.1:3000` so its site matches the local API cookie host. Type-check the frontend with `make frontend-test` and create a production build locally with `make frontend-build`. No browser testing framework has been added at this stage.
 
+## Basic ledger API
+
+All ledger endpoints require the session cookie created by login. State-changing requests also require the configured `Origin`. Transaction, snapshot, and transfer POSTs require an `Idempotency-Key` (1-128 characters using letters, digits, `.`, `_`, `:`, or `-`); retry the same request with the same key to receive the original logical result without posting twice. Monetary magnitudes use integer minor units; for example, `125050` means MXN 1,250.50.
+
+Create an account:
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-transaction-001' \
+  --data '{"name":"Primary bank","type":"bank","currency":"MXN"}' \
+  http://127.0.0.1:8080/api/v1/accounts
+```
+
+Post an asset outflow and read the reconstructed balance:
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-transfer-001' \
+  --data '{"effect":"asset_outflow","amount_minor":125050,"currency":"MXN","financial_date":"2026-08-10","memo":"Example purchase"}' \
+  http://127.0.0.1:8080/api/v1/accounts/ACCOUNT_ID/transactions
+
+curl -sS -b /tmp/runway-cookies.txt \
+  http://127.0.0.1:8080/api/v1/accounts/ACCOUNT_ID/balance
+```
+
+Create an atomic same-currency transfer (use a credit-card account as the destination for a card payment):
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  --data '{"source_account_id":"BANK_ID","destination_account_id":"CASH_OR_CARD_ID","amount_minor":50000,"currency":"MXN","financial_date":"2026-08-10","memo":"Internal transfer"}' \
+  http://127.0.0.1:8080/api/v1/transfers
+```
+
+The API also supports listing and archiving accounts, listing immutable posted transactions, and creating reconciled balance snapshots. There are no edit or delete transaction endpoints.
+
 ## Project status
 
-Issue 4 adds the single owner, offline bootstrap command, Argon2id password hashing, PostgreSQL-backed sessions, and login/logout/identity endpoints. Financial accounts, transactions, cards, obligations, forecasting, financial calculations, AI integration, CI/CD, and production deployment are **not implemented**.
+Issue 5 adds owner-scoped accounts, immutable posted transactions, deterministic ledger sequences, reconciled balance snapshots, current account balance reconstruction, and atomic linked transfers. Credit-card statements, obligations, forecasting, safe-to-spend calculations, AI integration, CI/CD, and production deployment are **not implemented**.
 
-Financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md) when implementation begins.
+Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).

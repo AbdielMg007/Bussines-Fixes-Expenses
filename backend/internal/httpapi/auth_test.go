@@ -210,7 +210,7 @@ func (f *fakeAuthentication) Logout(_ context.Context, token string) error {
 }
 
 func newTestHandler(service AuthenticationService) http.Handler {
-	return NewHandler(service, AuthConfig{
+	return NewHandler(service, nil, AuthConfig{
 		AllowedOrigin:        testOrigin,
 		CookieSecure:         true,
 		SessionMaxAgeSeconds: 3600,

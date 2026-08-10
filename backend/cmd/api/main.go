@@ -16,6 +16,7 @@ import (
 	"runway/backend/internal/auth/password"
 	"runway/backend/internal/config"
 	"runway/backend/internal/httpapi"
+	"runway/backend/internal/ledger"
 	"runway/backend/internal/postgres"
 )
 
@@ -49,11 +50,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	financialLedger, err := ledger.NewService(postgres.NewLedgerRepository(pool), ledger.ServiceOptions{})
+	if err != nil {
+		return err
+	}
 
 	address := net.JoinHostPort(configuration.Host, configuration.Port)
 	server := &http.Server{
 		Addr: address,
-		Handler: httpapi.NewHandler(authentication, httpapi.AuthConfig{
+		Handler: httpapi.NewHandler(authentication, financialLedger, httpapi.AuthConfig{
 			AllowedOrigin:        configuration.ApplicationOrigin,
 			CookieSecure:         configuration.CookieSecure,
 			SessionMaxAgeSeconds: int(configuration.SessionDuration / time.Second),
