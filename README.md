@@ -126,6 +126,8 @@ make frontend-dev
 
 Open `http://127.0.0.1:3000` so its site matches the local API cookie host. Type-check the frontend with `make frontend-test` and create a production build locally with `make frontend-build`. No browser testing framework has been added at this stage.
 
+The frontend proxies browser requests from `/api/*` to `http://127.0.0.1:8080` by default, preserving the existing HttpOnly cookie and backend Origin checks. Set `RUNWAY_API_URL` when the API is hosted elsewhere; keep `APP_ORIGIN` aligned with the browser origin.
+
 ## Basic ledger API
 
 All ledger endpoints require the session cookie created by login. State-changing requests also require the configured `Origin`. Transaction, snapshot, and transfer POSTs require an `Idempotency-Key` (1-128 characters using letters, digits, `.`, `_`, `:`, or `-`); retry the same request with the same key to receive the original logical result without posting twice. Monetary magnitudes use integer minor units; for example, `125050` means MXN 1,250.50.
@@ -220,6 +222,6 @@ The read-only calculation reuses the baseline projection. It subtracts the confi
 
 ## Project status
 
-Issue 8 provides deterministic Safe-to-Spend for cash and bank funding accounts. Credit-card purchase evaluation, statement/payment prediction, MSI, AI integration, frontend financial UI, CI/CD, and production deployment are **not implemented**.
+Issue 9 provides the minimal authenticated Runway frontend: login, dashboard, Safe-to-Spend, projection timeline, accounts, manual transactions, transfers, and ProjectionPolicy setup. Credit-card purchase evaluation, statement/payment prediction, MSI, AI integration, CI/CD, and production deployment are **not implemented**.
 
 Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).
