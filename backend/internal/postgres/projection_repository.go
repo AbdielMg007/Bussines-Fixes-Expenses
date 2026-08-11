@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -171,66 +172,104 @@ func samePolicyConfiguration(left, right domainprojection.Policy) bool {
 }
 
 func (r *ProjectionRepository) LoadBaselineState(ctx context.Context, ownerID string, now time.Time) (applicationprojection.BaselineState, error) {
+	state, _, err := r.loadProjectionState(ctx, ownerID, now, "")
+	return state, err
+}
+
+func (r *ProjectionRepository) LoadSafeToSpendState(ctx context.Context, ownerID string, now time.Time, fundingAccountID string) (applicationprojection.SafeToSpendState, error) {
+	state, funding, err := r.loadProjectionState(ctx, ownerID, now, fundingAccountID)
+	if err != nil {
+		return applicationprojection.SafeToSpendState{}, err
+	}
+	if funding == nil {
+		return applicationprojection.SafeToSpendState{}, applicationprojection.ErrFundingAccountInvalid
+	}
+	return applicationprojection.SafeToSpendState{Baseline: state, FundingAccount: *funding}, nil
+}
+
+func (r *ProjectionRepository) loadProjectionState(ctx context.Context, ownerID string, now time.Time, fundingAccountID string) (applicationprojection.BaselineState, *applicationprojection.AccountBalance, error) {
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return applicationprojection.BaselineState{}, errors.New("load projection inputs")
+		return applicationprojection.BaselineState{}, nil, errors.New("load projection inputs")
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	policy, err := loadPolicy(ctx, tx, ownerID)
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 	if r.afterPolicyRead != nil {
 		r.afterPolicyRead()
 	}
 	asOf, err := domainprojection.FinancialDateAt(now, policy.FinancialTimezone())
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 	horizonEnd, err := asOf.AddDays(policy.HorizonDays())
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 
 	accounts, err := loadProjectionAccounts(ctx, tx, policy)
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 	accountBalances := make([]applicationprojection.AccountBalance, 0, len(accounts))
 	for _, financialAccount := range accounts {
 		if err := applicationprojection.ValidateSelectedAccount(financialAccount, ownerID, policy.Currency()); err != nil {
 			if policy.AccountSelection().Mode() == domainprojection.ExplicitSelection() &&
 				errors.Is(err, domainprojection.ErrInvalidAccountSelection) {
-				return applicationprojection.BaselineState{}, fmt.Errorf("%w: selected account %s", applicationprojection.ErrConfigurationInvalid, financialAccount.ID())
+				return applicationprojection.BaselineState{}, nil, fmt.Errorf("%w: selected account %s", applicationprojection.ErrConfigurationInvalid, financialAccount.ID())
 			}
-			return applicationprojection.BaselineState{}, err
+			return applicationprojection.BaselineState{}, nil, err
 		}
 		state, err := loadBalanceStateInTransaction(ctx, tx, financialAccount)
 		if err != nil {
-			return applicationprojection.BaselineState{}, err
+			return applicationprojection.BaselineState{}, nil, err
 		}
 		accountBalances = append(accountBalances, applicationprojection.AccountBalance{Account: financialAccount, State: state})
 	}
+	var fundingAccount *applicationprojection.AccountBalance
+	if strings.TrimSpace(fundingAccountID) != "" {
+		for index := range accountBalances {
+			if accountBalances[index].Account.ID() == fundingAccountID {
+				value := accountBalances[index]
+				fundingAccount = &value
+				break
+			}
+		}
+		if fundingAccount == nil {
+			financialAccount, err := scanAccount(tx.QueryRow(ctx, accountSelect+` WHERE owner_id = $1 AND id = $2`, ownerID, fundingAccountID))
+			if err != nil {
+				return applicationprojection.BaselineState{}, nil, err
+			}
+			state, err := loadBalanceStateInTransaction(ctx, tx, financialAccount)
+			if err != nil {
+				return applicationprojection.BaselineState{}, nil, err
+			}
+			value := applicationprojection.AccountBalance{Account: financialAccount, State: state}
+			fundingAccount = &value
+		}
+	}
 	obligations, err := loadProjectionObligations(ctx, tx, ownerID)
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 	flows, err := loadProjectionFlows(ctx, tx, ownerID)
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 	receivables, err := loadProjectionReceivables(ctx, tx, ownerID)
 	if err != nil {
-		return applicationprojection.BaselineState{}, err
+		return applicationprojection.BaselineState{}, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return applicationprojection.BaselineState{}, errors.New("load projection inputs")
+		return applicationprojection.BaselineState{}, nil, errors.New("load projection inputs")
 	}
 	return applicationprojection.BaselineState{
 		Policy: policy, AsOf: asOf, HorizonEnd: horizonEnd, Accounts: accountBalances,
 		Obligations: obligations, ManualFlows: flows, Receivables: receivables,
-	}, nil
+	}, fundingAccount, nil
 }
 
 const projectionPolicySelect = `

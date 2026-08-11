@@ -13,10 +13,12 @@ import (
 )
 
 var (
-	ErrPolicyNotFound        = errors.New("projection policy not found")
-	ErrConfigurationRequired = errors.New("projection policy is required")
-	ErrConfigurationInvalid  = errors.New("projection configuration is invalid")
-	ErrInvalidOwner          = errors.New("invalid projection owner")
+	ErrPolicyNotFound            = errors.New("projection policy not found")
+	ErrConfigurationRequired     = errors.New("projection policy is required")
+	ErrConfigurationInvalid      = errors.New("projection configuration is invalid")
+	ErrFundingAccountInvalid     = errors.New("funding account is invalid")
+	ErrFundingAccountNotSelected = errors.New("funding account is not selected for projection liquidity")
+	ErrInvalidOwner              = errors.New("invalid projection owner")
 )
 
 type AccountBalance struct {
@@ -34,8 +36,14 @@ type BaselineState struct {
 	Receivables []schedule.Receivable
 }
 
+type SafeToSpendState struct {
+	Baseline       BaselineState
+	FundingAccount AccountBalance
+}
+
 type Repository interface {
 	GetPolicy(context.Context, string) (domainprojection.Policy, error)
 	ReplacePolicy(context.Context, domainprojection.Policy) (domainprojection.Policy, error)
 	LoadBaselineState(context.Context, string, time.Time) (BaselineState, error)
+	LoadSafeToSpendState(context.Context, string, time.Time, string) (SafeToSpendState, error)
 }

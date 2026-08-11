@@ -207,8 +207,19 @@ curl -sS -b /tmp/runway-cookies.txt \
 
 `confirmed_only` includes eligible manual inflows only when amount and date are exact, plus confirmed dated receivables. `include_expected` also permits eligible estimated manual inflows and expected dated receivables. Uncertain or undated receivables are always excluded and reported with reason codes. The reserve is returned as metadata and is not subtracted from balances.
 
+## Safe-to-Spend API
+
+Issue 8 answers the funding-specific question for active cash and bank accounts selected by the current projection policy:
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt \
+  'http://127.0.0.1:8080/api/v1/safe-to-spend?funding_account_id=ACCOUNT_ID'
+```
+
+The read-only calculation reuses the baseline projection. It subtracts the configured reserve from the baseline minimum balance, never returns a negative amount, and caps the result at the funding account's reconstructed balance. A baseline already below reserve returns zero with breach details. Credit-card and loan funding return `unsupported_funding_type`; available credit is never liquidity. No hypothetical purchase or result is persisted.
+
 ## Project status
 
-Issue 7 provides an owner-scoped ProjectionPolicy and deterministic baseline projected-cash timeline. Safe-to-spend calculations, hypothetical purchases, credit-card statements, MSI, AI integration, CI/CD, and production deployment are **not implemented**.
+Issue 8 provides deterministic Safe-to-Spend for cash and bank funding accounts. Credit-card purchase evaluation, statement/payment prediction, MSI, AI integration, frontend financial UI, CI/CD, and production deployment are **not implemented**.
 
 Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).

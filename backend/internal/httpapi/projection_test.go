@@ -10,16 +10,18 @@ import (
 	"time"
 
 	"runway/backend/internal/auth"
+	"runway/backend/internal/domain/account"
 	"runway/backend/internal/domain/financialdate"
 	"runway/backend/internal/domain/money"
 	domainprojection "runway/backend/internal/domain/projection"
 	"runway/backend/internal/domain/schedule"
+	applicationledger "runway/backend/internal/ledger"
 	applicationprojection "runway/backend/internal/projection"
 )
 
 func TestProjectionEndpointsRequireAuthenticationAndMutationOrigin(t *testing.T) {
 	handler := NewHandler(&fakeAuthentication{}, nil, nil, AuthConfig{AllowedOrigin: testOrigin}, &fakeProjectionService{})
-	for _, path := range []string{"/api/v1/projection-policy", "/api/v1/projection"} {
+	for _, path := range []string{"/api/v1/projection-policy", "/api/v1/projection", "/api/v1/safe-to-spend?funding_account_id=bank"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		if response.Code != http.StatusUnauthorized {
@@ -88,6 +90,80 @@ func TestProjectionHTTPReturnsAuditableTraceAndExclusions(t *testing.T) {
 	}
 }
 
+func TestSafeToSpendHTTPUsesSessionOwnerAndReturnsAuditableResult(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	selection, _ := domainprojection.NewAccountSelection(domainprojection.ExplicitSelection(), []string{"bank"})
+	reserve, _ := money.New(30_000, money.MXN())
+	policy, _ := domainprojection.NewPolicy("owner-id", "owner-id", money.MXN(), 30, reserve, "America/Mexico_City", selection, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows(), now)
+	asOf := mustProjectionHTTPDate(t, "2026-08-10")
+	end, _ := asOf.AddDays(30)
+	opening, _ := money.NewBalance(260_000, money.MXN())
+	amount, _ := money.New(226_400, money.MXN())
+	event, _ := domainprojection.NewEvent("car", domainprojection.ManualScheduledFlowSource(), "car", mustProjectionHTTPDate(t, "2026-08-15"), amount, schedule.Outflow(), schedule.ExactAmount(), schedule.ExactDate(), domainprojection.MandatoryManualOutflow(), nil, "Car")
+	baseline, _ := domainprojection.Calculate(domainprojection.Input{Policy: policy, AsOf: asOf, HorizonEnd: end, SelectedAccountIDs: []string{"bank"}, OpeningBalance: opening, Events: []domainprojection.Event{event}})
+	funding, _ := account.Restore("bank", "owner-id", "Bank", account.Bank(), money.MXN(), account.ActiveStatus(), now, now)
+	fundingBalance, _ := money.NewBalance(260_000, money.MXN())
+	safe, _ := domainprojection.CalculateSafeToSpend(baseline, funding, fundingBalance)
+	var receivedOwner, receivedFunding string
+	service := &fakeProjectionService{safeToSpend: func(ownerID, fundingID string) (domainprojection.SafeToSpendResult, error) {
+		receivedOwner, receivedFunding = ownerID, fundingID
+		return safe, nil
+	}}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/safe-to-spend?funding_account_id=bank", nil)
+	request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+	response := httptest.NewRecorder()
+	newAuthenticatedProjectionHandler(service).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || receivedOwner != "owner-id" || receivedFunding != "bank" ||
+		!strings.Contains(response.Body.String(), `"safe_to_spend_minor":3600`) ||
+		!strings.Contains(response.Body.String(), `"status":"constrained_by_future_cash_flow"`) ||
+		!strings.Contains(response.Body.String(), `"limiting_event_id":"car"`) ||
+		!strings.Contains(response.Body.String(), `"baseline_projection"`) {
+		t.Fatalf("safe-to-spend = %d %s owner=%s funding=%s", response.Code, response.Body.String(), receivedOwner, receivedFunding)
+	}
+}
+
+func TestSafeToSpendHTTPValidationAndErrors(t *testing.T) {
+	handler := newAuthenticatedProjectionHandler(&fakeProjectionService{})
+	for _, path := range []string{
+		"/api/v1/safe-to-spend",
+		"/api/v1/safe-to-spend?funding_account_id=",
+		"/api/v1/safe-to-spend?funding_account_id=bank&extra=true",
+		"/api/v1/safe-to-spend?funding_account_id=bank&funding_account_id=cash",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s = %d %s", path, response.Code, response.Body.String())
+		}
+	}
+
+	for _, test := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{name: "unknown account", err: applicationledger.ErrNotFound, status: http.StatusNotFound},
+		{name: "stale policy", err: applicationprojection.ErrConfigurationInvalid, status: http.StatusConflict},
+		{name: "invalid funding", err: applicationprojection.ErrFundingAccountInvalid, status: http.StatusConflict},
+		{name: "not selected", err: applicationprojection.ErrFundingAccountNotSelected, status: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeProjectionService{safeToSpend: func(string, string) (domainprojection.SafeToSpendResult, error) {
+				return domainprojection.SafeToSpendResult{}, test.err
+			}}
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/safe-to-spend?funding_account_id=bank", nil)
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "valid-token"})
+			response := httptest.NewRecorder()
+			newAuthenticatedProjectionHandler(service).ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestProjectionHTTPStrictValidationAndErrorMapping(t *testing.T) {
 	handler := newAuthenticatedProjectionHandler(&fakeProjectionService{})
 	for _, test := range []struct {
@@ -148,9 +224,10 @@ func TestProjectionHTTPMapsStalePolicyConfigurationToConflict(t *testing.T) {
 }
 
 type fakeProjectionService struct {
-	get       func(string) (domainprojection.Policy, error)
-	replace   func(string, money.Currency, int, money.Money, string, domainprojection.AccountSelection, domainprojection.InflowPolicy, domainprojection.SameDayOrder) (domainprojection.Policy, error)
-	calculate func(string) (domainprojection.Result, error)
+	get         func(string) (domainprojection.Policy, error)
+	replace     func(string, money.Currency, int, money.Money, string, domainprojection.AccountSelection, domainprojection.InflowPolicy, domainprojection.SameDayOrder) (domainprojection.Policy, error)
+	calculate   func(string) (domainprojection.Result, error)
+	safeToSpend func(string, string) (domainprojection.SafeToSpendResult, error)
 }
 
 func (f *fakeProjectionService) GetPolicy(_ context.Context, ownerID string) (domainprojection.Policy, error) {
@@ -172,6 +249,13 @@ func (f *fakeProjectionService) CalculateBaseline(_ context.Context, ownerID str
 		return domainprojection.Result{}, errors.New("unexpected calculate")
 	}
 	return f.calculate(ownerID)
+}
+
+func (f *fakeProjectionService) CalculateSafeToSpend(_ context.Context, ownerID, fundingAccountID string) (domainprojection.SafeToSpendResult, error) {
+	if f.safeToSpend == nil {
+		return domainprojection.SafeToSpendResult{}, errors.New("unexpected safe to spend")
+	}
+	return f.safeToSpend(ownerID, fundingAccountID)
 }
 
 func newAuthenticatedProjectionHandler(service ProjectionService) http.Handler {

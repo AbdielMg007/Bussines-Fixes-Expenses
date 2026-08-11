@@ -11,4 +11,5 @@ var (
 	ErrInvalidSameDayOrder     = errors.New("invalid same-day event ordering")
 	ErrInvalidProjectionEvent  = errors.New("invalid projection event")
 	ErrEventOutsideHorizon     = errors.New("projection event is outside the projection interval")
+	ErrInvalidSafeToSpendInput = errors.New("invalid safe-to-spend input")
 )

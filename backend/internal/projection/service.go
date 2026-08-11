@@ -81,6 +81,51 @@ func (s *Service) CalculateBaseline(ctx context.Context, ownerID string) (domain
 	return AssembleAndCalculate(state)
 }
 
+func (s *Service) CalculateSafeToSpend(ctx context.Context, ownerID, fundingAccountID string) (domainprojection.SafeToSpendResult, error) {
+	if strings.TrimSpace(ownerID) == "" {
+		return domainprojection.SafeToSpendResult{}, ErrInvalidOwner
+	}
+	if strings.TrimSpace(fundingAccountID) == "" {
+		return domainprojection.SafeToSpendResult{}, ErrFundingAccountInvalid
+	}
+	fundingAccountID = strings.TrimSpace(fundingAccountID)
+	state, err := s.repository.LoadSafeToSpendState(ctx, ownerID, s.clock().UTC(), fundingAccountID)
+	if err != nil {
+		if errors.Is(err, ErrPolicyNotFound) {
+			return domainprojection.SafeToSpendResult{}, ErrConfigurationRequired
+		}
+		return domainprojection.SafeToSpendResult{}, err
+	}
+	baseline, err := AssembleAndCalculate(state.Baseline)
+	if err != nil {
+		return domainprojection.SafeToSpendResult{}, err
+	}
+	funding := state.FundingAccount.Account
+	if funding.OwnerID() != ownerID {
+		return domainprojection.SafeToSpendResult{}, applicationledger.ErrNotFound
+	}
+	if funding.Status().IsArchived() || funding.Currency() != baseline.Currency {
+		return domainprojection.SafeToSpendResult{}, ErrFundingAccountInvalid
+	}
+	fundingBalance, err := applicationledger.ReconstructBalance(state.FundingAccount.State)
+	if err != nil {
+		return domainprojection.SafeToSpendResult{}, err
+	}
+	if funding.Type() == account.Cash() || funding.Type() == account.Bank() {
+		selected := false
+		for _, accountID := range baseline.SelectedAccountIDs {
+			if accountID == funding.ID() {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			return domainprojection.SafeToSpendResult{}, ErrFundingAccountNotSelected
+		}
+	}
+	return domainprojection.CalculateSafeToSpend(baseline, funding, fundingBalance.Balance)
+}
+
 func AssembleAndCalculate(state BaselineState) (domainprojection.Result, error) {
 	opening, err := money.ZeroBalance(state.Policy.Currency())
 	if err != nil {

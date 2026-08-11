@@ -60,6 +60,7 @@ type ProjectionService interface {
 	GetPolicy(context.Context, string) (domainprojection.Policy, error)
 	ReplacePolicy(context.Context, string, money.Currency, int, money.Money, string, domainprojection.AccountSelection, domainprojection.InflowPolicy, domainprojection.SameDayOrder) (domainprojection.Policy, error)
 	CalculateBaseline(context.Context, string) (domainprojection.Result, error)
+	CalculateSafeToSpend(context.Context, string, string) (domainprojection.SafeToSpendResult, error)
 }
 
 func NewHandler(authentication AuthenticationService, financial LedgerService, future ScheduleService, authConfig AuthConfig, projectionServices ...ProjectionService) http.Handler {
@@ -102,5 +103,6 @@ func NewHandler(authentication AuthenticationService, financial LedgerService, f
 	mux.HandleFunc("GET /api/v1/projection-policy", projectionHandler.getPolicy)
 	mux.HandleFunc("PUT /api/v1/projection-policy", projectionHandler.replacePolicy)
 	mux.HandleFunc("GET /api/v1/projection", projectionHandler.calculate)
+	mux.HandleFunc("GET /api/v1/safe-to-spend", projectionHandler.safeToSpend)
 	return mux
 }

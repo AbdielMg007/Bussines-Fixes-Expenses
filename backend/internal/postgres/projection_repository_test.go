@@ -271,6 +271,124 @@ func TestBaselineProjectionIntegrationTraceAndExclusions(t *testing.T) {
 	}
 }
 
+func TestSafeToSpendIntegrationTraceFundingRulesAndNoMutation(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ids := sequentialIDs()
+	ledgerService, _ := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: ids})
+	scheduleService, _ := applicationschedule.NewService(NewScheduleRepository(pool), applicationschedule.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: ids})
+	projectionService, _ := applicationprojection.NewService(NewProjectionRepository(pool), applicationprojection.ServiceOptions{Clock: func() time.Time { return now }})
+	bank := createTestAccount(t, ledgerService, "owner", "Bank", account.Bank())
+	card := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	asOf := projectionTestDate(t, "2026-08-10")
+	postProjectionTransaction(t, ledgerService, bank.ID(), domainledger.AssetInflow(), 260_000, asOf, "safe-opening-bank")
+	postProjectionTransaction(t, ledgerService, card.ID(), domainledger.LiabilityCharge(), 900_000, asOf, "safe-opening-card")
+
+	car, _ := money.New(226_400, money.MXN())
+	if _, err := scheduleService.CreateObligation(ctx, "owner", "Car", car, domainschedule.OneTime(), projectionTestDate(t, "2026-08-15"), nil, testIdempotencyKey(t, "safe-car")); err != nil {
+		t.Fatal(err)
+	}
+	payroll, _ := money.New(788_700, money.MXN())
+	if _, err := scheduleService.CreateManualScheduledFlow(ctx, "owner", payroll, domainschedule.Inflow(), projectionTestDate(t, "2026-08-15"), domainschedule.ManualExpectedIncomeSource(), domainschedule.ExactAmount(), domainschedule.ExactDate(), domainschedule.EligibleForPolicy(), testIdempotencyKey(t, "safe-payroll")); err != nil {
+		t.Fatal(err)
+	}
+	insurance, _ := money.New(222_300, money.MXN())
+	if _, err := scheduleService.CreateManualScheduledFlow(ctx, "owner", insurance, domainschedule.Outflow(), projectionTestDate(t, "2026-09-01"), domainschedule.ManualOtherSource(), domainschedule.ExactAmount(), domainschedule.ExactDate(), domainschedule.EligibleForPolicy(), testIdempotencyKey(t, "safe-insurance")); err != nil {
+		t.Fatal(err)
+	}
+	uncertain, _ := money.New(3_500_000, money.MXN())
+	if _, err := scheduleService.CreateReceivable(ctx, "owner", "Family business", uncertain, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, "safe-uncertain")); err != nil {
+		t.Fatal(err)
+	}
+	all, _ := domainprojection.NewAccountSelection(domainprojection.AllActiveLiquidSelection(), nil)
+	reserve300, _ := money.New(30_000, money.MXN())
+	if _, err := projectionService.ReplacePolicy(ctx, "owner", money.MXN(), 30, reserve300, "America/Mexico_City", all, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows()); err != nil {
+		t.Fatal(err)
+	}
+
+	before := projectionFinancialRowCounts(t, pool)
+	result, err := projectionService.CalculateSafeToSpend(ctx, "owner", bank.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SafeToSpend.MinorUnits() != 3_600 || result.Status != domainprojection.ConstrainedByFutureCashFlowStatus() ||
+		result.BaselineMinimumBalance.MinorUnits() != 33_600 || result.LimitingEventID == "" || result.LimitingDate == nil || result.LimitingDate.String() != "2026-08-15" {
+		t.Fatalf("reserve 300 result = %+v", result)
+	}
+	if result.BaselineProjection.OpeningBalance.MinorUnits() != 260_000 || len(result.BaselineProjection.Events) != 3 || len(result.BaselineProjection.Exclusions) != 1 {
+		t.Fatalf("baseline audit trace = %+v", result.BaselineProjection)
+	}
+	if after := projectionFinancialRowCounts(t, pool); after != before {
+		t.Fatalf("safe-to-spend mutated financial rows: before=%v after=%v", before, after)
+	}
+
+	reserve500, _ := money.New(50_000, money.MXN())
+	if _, err := projectionService.ReplacePolicy(ctx, "owner", money.MXN(), 30, reserve500, "America/Mexico_City", all, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows()); err != nil {
+		t.Fatal(err)
+	}
+	below, err := projectionService.CalculateSafeToSpend(ctx, "owner", bank.ID())
+	if err != nil || below.SafeToSpend.MinorUnits() != 0 || below.Status != domainprojection.AlreadyBelowReserveStatus() || below.Deficit.MinorUnits() != 16_400 || below.EarliestBreachDate == nil || below.EarliestBreachDate.String() != "2026-08-15" {
+		t.Fatalf("reserve 500 result = %+v, %v", below, err)
+	}
+	unsupported, err := projectionService.CalculateSafeToSpend(ctx, "owner", card.ID())
+	if err != nil || unsupported.Status != domainprojection.UnsupportedFundingTypeStatus() || unsupported.SafeToSpend.MinorUnits() != 0 {
+		t.Fatalf("credit-card funding = %+v, %v", unsupported, err)
+	}
+}
+
+func TestSafeToSpendUsesOneRepeatableReadProjectionState(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ids := sequentialIDs()
+	ledgerService, _ := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: ids})
+	bank := createTestAccount(t, ledgerService, "owner", "Bank", account.Bank())
+	asOf := projectionTestDate(t, "2026-08-10")
+	postProjectionTransaction(t, ledgerService, bank.ID(), domainledger.AssetInflow(), 100_000, asOf, "safe-snapshot-opening")
+	reserve, _ := money.Zero(money.MXN())
+	all, _ := domainprojection.NewAccountSelection(domainprojection.AllActiveLiquidSelection(), nil)
+	baseRepository := NewProjectionRepository(pool)
+	baseService, _ := applicationprojection.NewService(baseRepository, applicationprojection.ServiceOptions{Clock: func() time.Time { return now }})
+	if _, err := baseService.ReplacePolicy(ctx, "owner", money.MXN(), 30, reserve, "America/Mexico_City", all, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows()); err != nil {
+		t.Fatal(err)
+	}
+
+	policyRead := make(chan struct{})
+	continueRead := make(chan struct{})
+	var once sync.Once
+	repository := NewProjectionRepository(pool)
+	repository.afterPolicyRead = func() {
+		once.Do(func() { close(policyRead) })
+		<-continueRead
+	}
+	service, _ := applicationprojection.NewService(repository, applicationprojection.ServiceOptions{Clock: func() time.Time { return now }})
+	resultChannel := make(chan domainprojection.SafeToSpendResult, 1)
+	errorChannel := make(chan error, 1)
+	go func() {
+		result, err := service.CalculateSafeToSpend(ctx, "owner", bank.ID())
+		resultChannel <- result
+		errorChannel <- err
+	}()
+	<-policyRead
+	postProjectionTransaction(t, ledgerService, bank.ID(), domainledger.AssetOutflow(), 40_000, asOf, "safe-snapshot-outflow")
+	close(continueRead)
+	old := <-resultChannel
+	if err := <-errorChannel; err != nil {
+		t.Fatal(err)
+	}
+	if old.OpeningLiquidBalance.MinorUnits() != 100_000 || old.FundingAccountBalance.MinorUnits() != 100_000 || old.SafeToSpend.MinorUnits() != 100_000 {
+		t.Fatalf("old coherent state = %+v", old)
+	}
+	fresh, err := baseService.CalculateSafeToSpend(ctx, "owner", bank.ID())
+	if err != nil || fresh.OpeningLiquidBalance.MinorUnits() != 60_000 || fresh.FundingAccountBalance.MinorUnits() != 60_000 || fresh.SafeToSpend.MinorUnits() != 60_000 {
+		t.Fatalf("fresh coherent state = %+v, %v", fresh, err)
+	}
+}
+
 func TestProjectionReceivableProvenanceIntegrationTrace(t *testing.T) {
 	pool := newIsolatedTestDatabase(t)
 	ctx := context.Background()
@@ -471,6 +589,29 @@ func projectionTestDate(t *testing.T, value string) financialdate.Date {
 		t.Fatal(err)
 	}
 	return date
+}
+
+type projectionRowCounts struct {
+	transactions int
+	obligations  int
+	flows        int
+	receivables  int
+}
+
+func projectionFinancialRowCounts(t *testing.T, pool interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}) projectionRowCounts {
+	t.Helper()
+	var counts projectionRowCounts
+	if err := pool.QueryRow(context.Background(), `
+		SELECT
+			(SELECT count(*) FROM financial_transactions),
+			(SELECT count(*) FROM obligations),
+			(SELECT count(*) FROM scheduled_cash_flows),
+			(SELECT count(*) FROM receivables)`).Scan(&counts.transactions, &counts.obligations, &counts.flows, &counts.receivables); err != nil {
+		t.Fatal(err)
+	}
+	return counts
 }
 
 func assertProjectionPolicyAccountIDs(t *testing.T, pool interface {

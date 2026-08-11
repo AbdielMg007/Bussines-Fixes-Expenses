@@ -257,10 +257,77 @@ func TestServiceUsesInjectedClockAndMapsMissingPolicy(t *testing.T) {
 	}
 }
 
+func TestServiceCalculatesFundingSpecificSafeToSpendFromOneLoadedState(t *testing.T) {
+	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
+	bank := applicationAccount(t, "bank", account.Bank(), account.ActiveStatus(), now)
+	bankBalance, _ := money.NewBalance(260_000, money.MXN())
+	selection, _ := domainprojection.NewAccountSelection(domainprojection.ExplicitSelection(), []string{"bank"})
+	reserve, _ := money.New(30_000, money.MXN())
+	policy, _ := domainprojection.NewPolicy("owner", "owner", money.MXN(), 30, reserve, "America/Mexico_City", selection, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows(), now)
+	asOf := applicationDate(t, "2026-08-10")
+	horizonEnd, _ := asOf.AddDays(30)
+	outflow := applicationFlow(t, "car", 226_400, schedule.Outflow(), "2026-08-15", schedule.ExactAmount(), schedule.ExactDate(), schedule.EligibleForPolicy(), schedule.ScheduledFlow(), now)
+	inflow := applicationFlow(t, "payroll", 788_700, schedule.Inflow(), "2026-08-15", schedule.ExactAmount(), schedule.ExactDate(), schedule.EligibleForPolicy(), schedule.ScheduledFlow(), now)
+	accountState := AccountBalance{Account: bank, State: stateWithSnapshot(t, bank, bankBalance, now)}
+	repository := &fakeProjectionRepository{safeToSpendState: SafeToSpendState{
+		Baseline:       BaselineState{Policy: policy, AsOf: asOf, HorizonEnd: horizonEnd, Accounts: []AccountBalance{accountState}, ManualFlows: []schedule.ScheduledCashFlow{inflow, outflow}},
+		FundingAccount: accountState,
+	}}
+	service, _ := NewService(repository, ServiceOptions{Clock: func() time.Time { return now }})
+
+	result, err := service.CalculateSafeToSpend(context.Background(), "owner", "bank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SafeToSpend.MinorUnits() != 3_600 || result.Status != domainprojection.ConstrainedByFutureCashFlowStatus() || result.FundingAccountBalance.MinorUnits() != 260_000 {
+		t.Fatalf("safe-to-spend = %+v", result)
+	}
+}
+
+func TestServiceSafeToSpendFundingValidation(t *testing.T) {
+	now := time.Date(2026, 8, 10, 18, 0, 0, 0, time.UTC)
+	asOf := applicationDate(t, "2026-08-10")
+	reserve, _ := money.Zero(money.MXN())
+	selection, _ := domainprojection.NewAccountSelection(domainprojection.ExplicitSelection(), nil)
+	policy, _ := domainprojection.NewPolicy("owner", "owner", money.MXN(), 30, reserve, "America/Mexico_City", selection, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows(), now)
+	horizonEnd, _ := asOf.AddDays(30)
+	zero, _ := money.ZeroBalance(money.MXN())
+	otherOwnerBank, _ := account.Restore("other-bank", "other-owner", "Other bank", account.Bank(), money.MXN(), account.ActiveStatus(), now, now)
+
+	for _, test := range []struct {
+		name      string
+		financial account.Account
+		wantError error
+		wantState domainprojection.SafeToSpendStatus
+	}{
+		{name: "non-selected bank", financial: applicationAccount(t, "bank", account.Bank(), account.ActiveStatus(), now), wantError: ErrFundingAccountNotSelected},
+		{name: "archived cash", financial: applicationAccount(t, "cash", account.Cash(), account.ArchivedStatus(), now), wantError: ErrFundingAccountInvalid},
+		{name: "other owner", financial: otherOwnerBank, wantError: applicationledger.ErrNotFound},
+		{name: "credit card unsupported", financial: applicationAccount(t, "card", account.CreditCard(), account.ActiveStatus(), now), wantState: domainprojection.UnsupportedFundingTypeStatus()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			funding := AccountBalance{Account: test.financial, State: stateWithSnapshot(t, test.financial, zero, now)}
+			repository := &fakeProjectionRepository{safeToSpendState: SafeToSpendState{Baseline: BaselineState{Policy: policy, AsOf: asOf, HorizonEnd: horizonEnd}, FundingAccount: funding}}
+			service, _ := NewService(repository, ServiceOptions{Clock: func() time.Time { return now }})
+			result, err := service.CalculateSafeToSpend(context.Background(), "owner", test.financial.ID())
+			if test.wantError != nil {
+				if !errors.Is(err, test.wantError) {
+					t.Fatalf("error = %v", err)
+				}
+				return
+			}
+			if err != nil || result.Status != test.wantState || result.SafeToSpend.MinorUnits() != 0 {
+				t.Fatalf("result = %+v, error = %v", result, err)
+			}
+		})
+	}
+}
+
 type fakeProjectionRepository struct {
-	policy    domainprojection.Policy
-	state     BaselineState
-	loadError error
+	policy           domainprojection.Policy
+	state            BaselineState
+	safeToSpendState SafeToSpendState
+	loadError        error
 }
 
 func (r *fakeProjectionRepository) GetPolicy(context.Context, string) (domainprojection.Policy, error) {
@@ -272,6 +339,9 @@ func (r *fakeProjectionRepository) ReplacePolicy(_ context.Context, value domain
 }
 func (r *fakeProjectionRepository) LoadBaselineState(context.Context, string, time.Time) (BaselineState, error) {
 	return r.state, r.loadError
+}
+func (r *fakeProjectionRepository) LoadSafeToSpendState(context.Context, string, time.Time, string) (SafeToSpendState, error) {
+	return r.safeToSpendState, r.loadError
 }
 
 func applicationTestPolicy(t *testing.T, inflow domainprojection.InflowPolicy, mode domainprojection.AccountSelectionMode, ids []string) domainprojection.Policy {

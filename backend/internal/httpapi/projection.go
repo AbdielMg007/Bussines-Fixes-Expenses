@@ -93,6 +93,26 @@ type projectionResponse struct {
 	Exclusions          []projectionExclusionResponse `json:"exclusions"`
 }
 
+type safeToSpendResponse struct {
+	AsOf                        string             `json:"as_of"`
+	Currency                    string             `json:"currency"`
+	FundingAccountID            string             `json:"funding_account_id"`
+	FundingAccountBalanceMinor  int64              `json:"funding_account_balance_minor"`
+	ReserveMinor                int64              `json:"reserve_minor"`
+	OpeningLiquidBalanceMinor   int64              `json:"opening_liquid_balance_minor"`
+	BaselineMinimumBalanceMinor int64              `json:"baseline_minimum_balance_minor"`
+	SafeToSpendMinor            int64              `json:"safe_to_spend_minor"`
+	Status                      string             `json:"status"`
+	LimitingEventID             string             `json:"limiting_event_id,omitempty"`
+	LimitingDate                *string            `json:"limiting_date,omitempty"`
+	EarliestBreachEventID       string             `json:"earliest_breach_event_id,omitempty"`
+	EarliestBreachDate          *string            `json:"earliest_breach_date,omitempty"`
+	DeficitMinor                int64              `json:"deficit_minor"`
+	PolicyID                    string             `json:"policy_id"`
+	PolicyVersion               int64              `json:"policy_version"`
+	BaselineProjection          projectionResponse `json:"baseline_projection"`
+}
+
 func (h projectionHandler) getPolicy(w http.ResponseWriter, r *http.Request) {
 	ownerID, ok := h.authorize(w, r)
 	if !ok {
@@ -171,6 +191,25 @@ func (h projectionHandler) calculate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, mapProjection(result))
+}
+
+func (h projectionHandler) safeToSpend(w http.ResponseWriter, r *http.Request) {
+	ownerID, ok := h.authorize(w, r)
+	if !ok {
+		return
+	}
+	query := r.URL.Query()
+	accountIDs, exists := query["funding_account_id"]
+	if !exists || len(query) != 1 || len(accountIDs) != 1 || accountIDs[0] == "" {
+		writeError(w, http.StatusBadRequest, "funding_account_id is required")
+		return
+	}
+	result, err := h.projection.CalculateSafeToSpend(r.Context(), ownerID, accountIDs[0])
+	if err != nil {
+		writeProjectionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mapSafeToSpend(result))
 }
 
 func (h projectionHandler) authorizeMutation(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -256,6 +295,26 @@ func mapProjection(result domainprojection.Result) projectionResponse {
 	return response
 }
 
+func mapSafeToSpend(result domainprojection.SafeToSpendResult) safeToSpendResponse {
+	response := safeToSpendResponse{
+		AsOf: result.AsOf.String(), Currency: result.Currency.Code(), FundingAccountID: result.FundingAccountID,
+		FundingAccountBalanceMinor: result.FundingAccountBalance.MinorUnits(), ReserveMinor: result.Reserve.MinorUnits(),
+		OpeningLiquidBalanceMinor: result.OpeningLiquidBalance.MinorUnits(), BaselineMinimumBalanceMinor: result.BaselineMinimumBalance.MinorUnits(),
+		SafeToSpendMinor: result.SafeToSpend.MinorUnits(), Status: result.Status.String(), LimitingEventID: result.LimitingEventID,
+		EarliestBreachEventID: result.EarliestBreachEventID, DeficitMinor: result.Deficit.MinorUnits(),
+		PolicyID: result.PolicyID, PolicyVersion: result.PolicyVersion, BaselineProjection: mapProjection(result.BaselineProjection),
+	}
+	if result.LimitingDate != nil {
+		value := result.LimitingDate.String()
+		response.LimitingDate = &value
+	}
+	if result.EarliestBreachDate != nil {
+		value := result.EarliestBreachDate.String()
+		response.EarliestBreachDate = &value
+	}
+	return response
+}
+
 func writeProjectionError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, applicationprojection.ErrPolicyNotFound), errors.Is(err, applicationledger.ErrNotFound):
@@ -264,12 +323,17 @@ func writeProjectionError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "projection policy is required")
 	case errors.Is(err, applicationprojection.ErrConfigurationInvalid):
 		writeError(w, http.StatusConflict, "projection configuration is invalid; update projection policy")
+	case errors.Is(err, applicationprojection.ErrFundingAccountInvalid):
+		writeError(w, http.StatusConflict, "funding account is inactive or incompatible with the projection policy")
+	case errors.Is(err, applicationprojection.ErrFundingAccountNotSelected):
+		writeError(w, http.StatusConflict, "funding account is not selected for projection liquidity")
 	case errors.Is(err, money.ErrMonetaryAmountOverflow):
 		writeError(w, http.StatusUnprocessableEntity, "projection arithmetic is outside the supported range")
 	case errors.Is(err, domainprojection.ErrInvalidPolicy), errors.Is(err, domainprojection.ErrInvalidHorizon),
 		errors.Is(err, domainprojection.ErrInvalidTimezone), errors.Is(err, domainprojection.ErrInvalidAccountSelection),
 		errors.Is(err, domainprojection.ErrInvalidInflowPolicy), errors.Is(err, domainprojection.ErrInvalidSameDayOrder),
 		errors.Is(err, domainprojection.ErrInvalidProjectionEvent), errors.Is(err, domainprojection.ErrEventOutsideHorizon),
+		errors.Is(err, domainprojection.ErrInvalidSafeToSpendInput),
 		errors.Is(err, money.ErrUnsupportedCurrency), errors.Is(err, money.ErrNegativeMagnitude),
 		errors.Is(err, money.ErrCurrencyMismatch), errors.Is(err, financialdate.ErrInvalidDate):
 		writeError(w, http.StatusBadRequest, "invalid request")
