@@ -260,16 +260,21 @@ func (r *ScheduleRepository) CreateReceivable(ctx context.Context, receivable do
 	}
 	expectedDate, hasDate := receivable.ExpectedDate()
 	var expected any
+	var dateProvenance any
 	if hasDate {
 		expected = expectedDate.String()
+		value, _ := receivable.DateProvenance()
+		dateProvenance = value.String()
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO receivables
-			(id, owner_id, display_name, original_amount_minor, collected_amount_minor, currency, status, expected_date, certainty, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10, $11)`,
+			(id, owner_id, display_name, original_amount_minor, collected_amount_minor, currency, status,
+			 expected_date, certainty, amount_provenance, date_provenance, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::date, $9, $10, $11, $12, $13)`,
 		receivable.ID(), receivable.OwnerID(), receivable.DisplayName(), receivable.OriginalAmount().MinorUnits(),
 		receivable.CollectedAmount().MinorUnits(), receivable.OriginalAmount().Currency().Code(), receivable.Status().String(),
-		expected, receivable.Certainty().String(), receivable.CreatedAt(), receivable.UpdatedAt(),
+		expected, receivable.Certainty().String(), receivable.AmountProvenance().String(), dateProvenance,
+		receivable.CreatedAt(), receivable.UpdatedAt(),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -418,7 +423,8 @@ const scheduledFlowSelect = `
 
 const receivableSelect = `
 	SELECT id, owner_id, display_name, original_amount_minor, collected_amount_minor, currency,
-	       status, COALESCE(to_char(expected_date, 'YYYY-MM-DD'), ''), certainty, created_at, updated_at
+	       status, COALESCE(to_char(expected_date, 'YYYY-MM-DD'), ''), certainty, amount_provenance,
+	       COALESCE(date_provenance, ''), created_at, updated_at
 	FROM receivables`
 
 const collectionSelect = `
@@ -526,10 +532,13 @@ func scanScheduledFlow(row rowScanner) (domainschedule.ScheduledCashFlow, error)
 }
 
 func scanReceivable(row rowScanner) (domainschedule.Receivable, error) {
-	var id, ownerID, name, currencyCode, statusValue, expectedValue, certaintyValue string
+	var id, ownerID, name, currencyCode, statusValue, expectedValue, certaintyValue, amountProvenanceValue, dateProvenanceValue string
 	var originalMinor, collectedMinor int64
 	var createdAt, updatedAt time.Time
-	if err := row.Scan(&id, &ownerID, &name, &originalMinor, &collectedMinor, &currencyCode, &statusValue, &expectedValue, &certaintyValue, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(
+		&id, &ownerID, &name, &originalMinor, &collectedMinor, &currencyCode, &statusValue,
+		&expectedValue, &certaintyValue, &amountProvenanceValue, &dateProvenanceValue, &createdAt, &updatedAt,
+	); err != nil {
 		return domainschedule.Receivable{}, scheduleReadError(err, "receivable")
 	}
 	currency, err := money.ParseCurrency(currencyCode)
@@ -553,14 +562,27 @@ func scanReceivable(row rowScanner) (domainschedule.Receivable, error) {
 		return domainschedule.Receivable{}, err
 	}
 	var expected *financialdate.Date
+	var dateProvenance *domainschedule.DateProvenance
 	if expectedValue != "" {
 		value, err := financialdate.Parse(expectedValue)
 		if err != nil {
 			return domainschedule.Receivable{}, err
 		}
 		expected = &value
+		parsed, err := domainschedule.ParseDateProvenance(dateProvenanceValue)
+		if err != nil {
+			return domainschedule.Receivable{}, err
+		}
+		dateProvenance = &parsed
 	}
-	return domainschedule.RestoreReceivable(id, ownerID, name, original, collected, status, expected, certainty, createdAt, updatedAt)
+	amountProvenance, err := domainschedule.ParseAmountProvenance(amountProvenanceValue)
+	if err != nil {
+		return domainschedule.Receivable{}, err
+	}
+	return domainschedule.RestoreReceivable(
+		id, ownerID, name, original, collected, status, expected, certainty,
+		amountProvenance, dateProvenance, createdAt, updatedAt,
+	)
 }
 
 func scanCollection(row rowScanner) (domainschedule.ReceivableCollection, error) {
@@ -634,8 +656,14 @@ func originalReceivableResult(current domainschedule.Receivable) (domainschedule
 	if hasExpected {
 		expectedPointer = &expected
 	}
+	dateProvenance, hasDateProvenance := current.DateProvenance()
+	var dateProvenancePointer *domainschedule.DateProvenance
+	if hasDateProvenance {
+		dateProvenancePointer = &dateProvenance
+	}
 	return domainschedule.RestoreReceivable(
 		current.ID(), current.OwnerID(), current.DisplayName(), current.OriginalAmount(), zero,
-		domainschedule.OpenReceivable(), expectedPointer, current.Certainty(), current.CreatedAt(), current.CreatedAt(),
+		domainschedule.OpenReceivable(), expectedPointer, current.Certainty(), current.AmountProvenance(),
+		dateProvenancePointer, current.CreatedAt(), current.CreatedAt(),
 	)
 }

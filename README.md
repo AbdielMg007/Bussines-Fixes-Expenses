@@ -185,10 +185,30 @@ curl -sS -b /tmp/runway-cookies.txt \
   http://127.0.0.1:8080/api/v1/obligations/OBLIGATION_ID/archive
 ```
 
-`inactive_from` is the first suppressed financial date: earlier occurrences remain reproducible after archival. Expansion returns at most 1,000 occurrences and rejects larger requests. Monthly obligations retain their original day and clamp only in shorter months, so January 31 expands to February 28/29 and then March 31. Projection code must derive obligation occurrences directly and must not also load persisted obligation flows. An undated receivable is created with `"expected_date": null`; no date is inferred. Recording a collection updates receivable progress but does not automatically post a ledger transaction. An optional compatible ledger inflow ID may link the two records explicitly.
+`inactive_from` is the first suppressed financial date: earlier occurrences remain reproducible after archival. Expansion returns at most 1,000 occurrences and rejects larger requests. Monthly obligations retain their original day and clamp only in shorter months, so January 31 expands to February 28/29 and then March 31. Projection code must derive obligation occurrences directly and must not also load persisted obligation flows. Receivables require independent `amount_provenance` and, when `expected_date` is present, `date_provenance`; an undated receivable uses `"expected_date": null` and `"date_provenance": null`. Certainty never determines provenance. Recording a collection updates receivable progress but does not automatically post a ledger transaction. An optional compatible ledger inflow ID may link the two records explicitly.
+
+Migration `0007_receivable_provenance.sql` intentionally refuses to assign provenance to pre-existing pre-release receivable rows. A development database containing those legacy rows must be reset or explicitly reconciled before applying the migration; the migration never fabricates historical provenance.
+
+## Baseline projection API
+
+Issue 7 adds a deterministic, read-only cash timeline. Configure the single owner policy first; `PUT` requires the authenticated cookie and configured `Origin`, but not an `Idempotency-Key`:
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt -X PUT \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  --data '{"currency":"MXN","horizon_days":60,"reserve_minor":100000,"financial_timezone":"America/Mexico_City","account_selection":{"mode":"all_active_liquid","account_ids":[]},"inflow_policy":"confirmed_only","same_day_order":"outflows_before_inflows"}' \
+  http://127.0.0.1:8080/api/v1/projection-policy
+
+curl -sS -b /tmp/runway-cookies.txt \
+  http://127.0.0.1:8080/api/v1/projection
+```
+
+`all_active_liquid` includes active cash and bank accounts only; `explicit` accepts a chosen set of active cash/bank account IDs. Credit-card and loan balances never enter opening liquidity. The policy timezone determines `as_of`, and the opening balance uses current ledger truth. To avoid reapplying current-day activity, the timeline includes events strictly after `as_of` through `as_of + horizon_days`, inclusive. Same-day outflows precede inflows.
+
+`confirmed_only` includes eligible manual inflows only when amount and date are exact, plus confirmed dated receivables. `include_expected` also permits eligible estimated manual inflows and expected dated receivables. Uncertain or undated receivables are always excluded and reported with reason codes. The reserve is returned as metadata and is not subtracted from balances.
 
 ## Project status
 
-Issues 5 and 6 provide the owner-scoped posted ledger plus future obligations, scheduled cash flows, and receivables. ProjectionPolicy, forecasting, safe-to-spend calculations, credit-card statements, MSI, AI integration, CI/CD, and production deployment are **not implemented**.
+Issue 7 provides an owner-scoped ProjectionPolicy and deterministic baseline projected-cash timeline. Safe-to-spend calculations, hypothetical purchases, credit-card statements, MSI, AI integration, CI/CD, and production deployment are **not implemented**.
 
 Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).

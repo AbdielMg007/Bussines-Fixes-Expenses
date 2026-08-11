@@ -29,7 +29,7 @@ func TestScheduleEndpointsRequireAuthenticationOriginAndIdempotency(t *testing.T
 		{path: "/api/v1/obligations", body: `{"name":"Car","amount_minor":1,"currency":"MXN","recurrence":"one_time","start_date":"2026-08-15"}`},
 		{path: "/api/v1/obligations/id/archive", body: `{"inactive_from":"2026-08-20"}`},
 		{path: "/api/v1/scheduled-flows", body: `{"amount_minor":1,"currency":"MXN","direction":"inflow","financial_date":"2026-08-15","source_kind":"manual_expected_income","amount_provenance":"exact","date_provenance":"exact","inclusion_eligibility":"eligible"}`},
-		{path: "/api/v1/receivables", body: `{"name":"Debt","original_amount_minor":1,"currency":"MXN","certainty":"uncertain"}`},
+		{path: "/api/v1/receivables", body: `{"name":"Debt","original_amount_minor":1,"currency":"MXN","certainty":"uncertain","amount_provenance":"exact"}`},
 		{path: "/api/v1/receivables/id/collections", body: `{"amount_minor":1,"currency":"MXN","ledger_transaction_id":""}`},
 	} {
 		request := scheduleJSONRequest(http.MethodPost, test.path, test.body)
@@ -101,12 +101,12 @@ func TestScheduledFlowAndReceivableHTTPFlows(t *testing.T) {
 		createScheduledFlow: func(ownerID string, amount money.Money, direction domainschedule.Direction, date financialdate.Date, source domainschedule.SourceKind, amountProvenance domainschedule.AmountProvenance, dateProvenance domainschedule.DateProvenance, inclusion domainschedule.InclusionEligibility, key applicationledger.IdempotencyKey) (domainschedule.ScheduledCashFlow, error) {
 			return domainschedule.NewManualScheduledCashFlow("flow-id", ownerID, amount, direction, date, source, amountProvenance, dateProvenance, inclusion, now)
 		},
-		createReceivable: func(ownerID, name string, amount money.Money, expectedDate *financialdate.Date, certainty domainschedule.Certainty, key applicationledger.IdempotencyKey) (domainschedule.Receivable, error) {
-			return domainschedule.NewReceivable("receivable-id", ownerID, name, amount, expectedDate, certainty, now)
+		createReceivable: func(ownerID, name string, amount money.Money, expectedDate *financialdate.Date, certainty domainschedule.Certainty, amountProvenance domainschedule.AmountProvenance, dateProvenance *domainschedule.DateProvenance, key applicationledger.IdempotencyKey) (domainschedule.Receivable, error) {
+			return domainschedule.NewReceivable("receivable-id", ownerID, name, amount, expectedDate, certainty, amountProvenance, dateProvenance, now)
 		},
 		recordCollection: func(ownerID, receivableID string, amount money.Money, ledgerID string, key applicationledger.IdempotencyKey) (domainschedule.ReceivableCollection, error) {
 			original, _ := money.New(35_000_00, money.MXN())
-			receivable, _ := domainschedule.NewReceivable(receivableID, ownerID, "Debt", original, nil, domainschedule.Uncertain(), now)
+			receivable, _ := domainschedule.NewReceivable(receivableID, ownerID, "Debt", original, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, now)
 			_, collection, err := receivable.RecordCollection("collection-id", amount, ledgerID, now.Add(time.Hour))
 			return collection, err
 		},
@@ -128,9 +128,14 @@ func TestScheduledFlowAndReceivableHTTPFlows(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, scheduleJSONRequest(http.MethodPost, "/api/v1/receivables", `{"name":"Family business","original_amount_minor":3500000,"currency":"MXN","expected_date":null,"certainty":"uncertain"}`))
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"expected_date":null`) || !strings.Contains(response.Body.String(), `"certainty":"uncertain"`) {
+	handler.ServeHTTP(response, scheduleJSONRequest(http.MethodPost, "/api/v1/receivables", `{"name":"Family business","original_amount_minor":3500000,"currency":"MXN","expected_date":null,"certainty":"uncertain","amount_provenance":"exact","date_provenance":null}`))
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"expected_date":null`) || !strings.Contains(response.Body.String(), `"certainty":"uncertain"`) || !strings.Contains(response.Body.String(), `"amount_provenance":"exact"`) {
 		t.Fatalf("receivable = %d %s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, scheduleJSONRequest(http.MethodPost, "/api/v1/receivables", `{"name":"Confirmed reimbursement","original_amount_minor":10000,"currency":"MXN","expected_date":"2026-08-20","certainty":"confirmed","amount_provenance":"exact","date_provenance":"estimated"}`))
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"certainty":"confirmed"`) || !strings.Contains(response.Body.String(), `"date_provenance":"estimated"`) {
+		t.Fatalf("dated receivable = %d %s", response.Code, response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
@@ -148,9 +153,12 @@ func TestScheduleHTTPStrictValidationAndConflictMapping(t *testing.T) {
 	}{
 		{name: "malformed", path: "/api/v1/obligations", body: `{`, want: 400},
 		{name: "unknown field", path: "/api/v1/obligations", body: `{"name":"x","amount_minor":1,"currency":"MXN","recurrence":"one_time","start_date":"2026-08-15","owner_id":"attacker"}`, want: 400},
-		{name: "trailing JSON", path: "/api/v1/receivables", body: `{"name":"x","original_amount_minor":1,"currency":"MXN","certainty":"uncertain"}{}`, want: 400},
+		{name: "trailing JSON", path: "/api/v1/receivables", body: `{"name":"x","original_amount_minor":1,"currency":"MXN","certainty":"uncertain","amount_provenance":"exact"}{}`, want: 400},
 		{name: "zero amount", path: "/api/v1/scheduled-flows", body: `{"amount_minor":0,"currency":"MXN","direction":"inflow","financial_date":"2026-08-15","source_kind":"manual_expected_income","amount_provenance":"exact","date_provenance":"exact","inclusion_eligibility":"eligible"}`, want: 400},
 		{name: "scenario provenance", path: "/api/v1/scheduled-flows", body: `{"amount_minor":1,"currency":"MXN","direction":"inflow","financial_date":"2026-08-15","source_kind":"manual_expected_income","amount_provenance":"exact","date_provenance":"assumed_by_scenario","inclusion_eligibility":"eligible"}`, want: 400},
+		{name: "missing receivable amount provenance", path: "/api/v1/receivables", body: `{"name":"x","original_amount_minor":1,"currency":"MXN","certainty":"uncertain"}`, want: 400},
+		{name: "dated receivable missing date provenance", path: "/api/v1/receivables", body: `{"name":"x","original_amount_minor":1,"currency":"MXN","expected_date":"2026-08-15","certainty":"confirmed","amount_provenance":"exact"}`, want: 400},
+		{name: "undated receivable with date provenance", path: "/api/v1/receivables", body: `{"name":"x","original_amount_minor":1,"currency":"MXN","expected_date":null,"certainty":"uncertain","amount_provenance":"exact","date_provenance":"estimated"}`, want: 400},
 		{name: "missing archive date", path: "/api/v1/obligations/id/archive", body: `{}`, want: 400},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -193,7 +201,7 @@ type fakeSchedule struct {
 	getScheduledFlow    func(string, string) (domainschedule.ScheduledCashFlow, error)
 	listScheduledFlows  func(string) ([]domainschedule.ScheduledCashFlow, error)
 	cancelScheduledFlow func(string, string, applicationledger.IdempotencyKey) (domainschedule.ScheduledCashFlow, error)
-	createReceivable    func(string, string, money.Money, *financialdate.Date, domainschedule.Certainty, applicationledger.IdempotencyKey) (domainschedule.Receivable, error)
+	createReceivable    func(string, string, money.Money, *financialdate.Date, domainschedule.Certainty, domainschedule.AmountProvenance, *domainschedule.DateProvenance, applicationledger.IdempotencyKey) (domainschedule.Receivable, error)
 	getReceivable       func(string, string) (domainschedule.Receivable, error)
 	listReceivables     func(string) ([]domainschedule.Receivable, error)
 	recordCollection    func(string, string, money.Money, string, applicationledger.IdempotencyKey) (domainschedule.ReceivableCollection, error)
@@ -254,11 +262,11 @@ func (f *fakeSchedule) CancelScheduledFlow(_ context.Context, ownerID, id string
 	}
 	return f.cancelScheduledFlow(ownerID, id, key)
 }
-func (f *fakeSchedule) CreateReceivable(_ context.Context, ownerID, name string, amount money.Money, expectedDate *financialdate.Date, certainty domainschedule.Certainty, key applicationledger.IdempotencyKey) (domainschedule.Receivable, error) {
+func (f *fakeSchedule) CreateReceivable(_ context.Context, ownerID, name string, amount money.Money, expectedDate *financialdate.Date, certainty domainschedule.Certainty, amountProvenance domainschedule.AmountProvenance, dateProvenance *domainschedule.DateProvenance, key applicationledger.IdempotencyKey) (domainschedule.Receivable, error) {
 	if f.createReceivable == nil {
 		return domainschedule.Receivable{}, errors.New("unexpected CreateReceivable")
 	}
-	return f.createReceivable(ownerID, name, amount, expectedDate, certainty, key)
+	return f.createReceivable(ownerID, name, amount, expectedDate, certainty, amountProvenance, dateProvenance, key)
 }
 func (f *fakeSchedule) GetReceivable(_ context.Context, ownerID, id string) (domainschedule.Receivable, error) {
 	if f.getReceivable == nil {

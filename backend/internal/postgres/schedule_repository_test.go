@@ -16,6 +16,11 @@ import (
 	applicationschedule "runway/backend/internal/schedule"
 )
 
+func exactDateProvenancePointer() *domainschedule.DateProvenance {
+	value := domainschedule.ExactDate()
+	return &value
+}
+
 func TestScheduleRepositoryLifecycleIdempotencyAndOwnerIsolation(t *testing.T) {
 	pool := newIsolatedTestDatabase(t)
 	ctx := context.Background()
@@ -100,19 +105,22 @@ func TestScheduleRepositoryLifecycleIdempotencyAndOwnerIsolation(t *testing.T) {
 
 	original, _ := money.New(35_000_00, money.MXN())
 	receivableKey := testIdempotencyKey(t, "uncertain-receivable")
-	receivable, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), receivableKey)
+	receivable, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, receivableKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, hasDate := receivable.ExpectedDate(); hasDate {
 		t.Fatal("undated receivable acquired a date")
 	}
-	replayedReceivable, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), receivableKey)
+	replayedReceivable, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, receivableKey)
 	if err != nil || replayedReceivable.ID() != receivable.ID() {
 		t.Fatalf("receivable replay = %+v, %v", replayedReceivable, err)
 	}
-	if _, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Confirmed(), receivableKey); !errors.Is(err, applicationledger.ErrIdempotencyConflict) {
+	if _, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Confirmed(), domainschedule.ExactAmount(), nil, receivableKey); !errors.Is(err, applicationledger.ErrIdempotencyConflict) {
 		t.Fatalf("changed receivable replay error = %v", err)
+	}
+	if _, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), domainschedule.EstimatedAmount(), nil, receivableKey); !errors.Is(err, applicationledger.ErrIdempotencyConflict) {
+		t.Fatalf("changed receivable provenance replay error = %v", err)
 	}
 	partial, _ := money.New(5_000_00, money.MXN())
 	collectionKey := testIdempotencyKey(t, "partial-collection")
@@ -132,7 +140,7 @@ func TestScheduleRepositoryLifecycleIdempotencyAndOwnerIsolation(t *testing.T) {
 	if err != nil || current.CollectedAmount().MinorUnits() != 5_000_00 || current.Status() != domainschedule.PartialReceivable() {
 		t.Fatalf("partial receivable = %+v, %v", current, err)
 	}
-	if createReplay, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), receivableKey); err != nil || createReplay.ID() != receivable.ID() || createReplay.CollectedAmount().MinorUnits() != 0 || createReplay.Status() != domainschedule.OpenReceivable() {
+	if createReplay, err := service.CreateReceivable(ctx, "owner", "Family business", original, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, receivableKey); err != nil || createReplay.ID() != receivable.ID() || createReplay.CollectedAmount().MinorUnits() != 0 || createReplay.Status() != domainschedule.OpenReceivable() {
 		t.Fatalf("create receivable replay after collection = %+v, %v", createReplay, err)
 	}
 	tooMuch, _ := money.New(31_000_00, money.MXN())
@@ -140,7 +148,7 @@ func TestScheduleRepositoryLifecycleIdempotencyAndOwnerIsolation(t *testing.T) {
 		t.Fatalf("over-collection error = %v", err)
 	}
 	secondOriginal, _ := money.New(100_00, money.MXN())
-	second, _ := service.CreateReceivable(ctx, "owner", "Reimbursement", secondOriginal, nil, domainschedule.Confirmed(), testIdempotencyKey(t, "second-receivable"))
+	second, _ := service.CreateReceivable(ctx, "owner", "Reimbursement", secondOriginal, nil, domainschedule.Confirmed(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, "second-receivable"))
 	cancelledReceivable, err := service.CancelReceivable(ctx, "owner", second.ID(), testIdempotencyKey(t, "cancel-receivable"))
 	if err != nil || cancelledReceivable.Status() != domainschedule.CancelledReceivable() {
 		t.Fatalf("cancel receivable = %+v, %v", cancelledReceivable, err)
@@ -151,7 +159,7 @@ func TestScheduleRepositoryLifecycleIdempotencyAndOwnerIsolation(t *testing.T) {
 	if loaded, err := service.GetReceivable(ctx, "owner", second.ID()); err != nil || loaded.Status() != domainschedule.CancelledReceivable() {
 		t.Fatalf("cancelled receivable read = %+v, %v", loaded, err)
 	}
-	third, _ := service.CreateReceivable(ctx, "owner", "Another reimbursement", secondOriginal, nil, domainschedule.Confirmed(), testIdempotencyKey(t, "third-receivable"))
+	third, _ := service.CreateReceivable(ctx, "owner", "Another reimbursement", secondOriginal, nil, domainschedule.Confirmed(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, "third-receivable"))
 	if _, err := service.CancelReceivable(ctx, "owner", third.ID(), testIdempotencyKey(t, "cancel-receivable")); !errors.Is(err, applicationledger.ErrIdempotencyConflict) {
 		t.Fatalf("cancel key reused for different receivable error = %v", err)
 	}
@@ -194,7 +202,7 @@ func TestScheduleListsUseStableIDTieBreakers(t *testing.T) {
 		}
 	}
 	for _, value := range []struct{ name, key string }{{"Z receivable", "ordered-receivable-z"}, {"A receivable", "ordered-receivable-a"}} {
-		if _, err := service.CreateReceivable(ctx, "owner", value.name, amount, nil, domainschedule.Uncertain(), testIdempotencyKey(t, value.key)); err != nil {
+		if _, err := service.CreateReceivable(ctx, "owner", value.name, amount, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, value.key)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -228,13 +236,13 @@ func TestReceivableCollectionCanLinkCompatibleLedgerInflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	receivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Reimbursement", amount, &date, domainschedule.Confirmed(), testIdempotencyKey(t, "linked-receivable"))
+	receivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Reimbursement", amount, &date, domainschedule.Confirmed(), domainschedule.ExactAmount(), exactDateProvenancePointer(), testIdempotencyKey(t, "linked-receivable"))
 	collection, err := scheduleService.RecordReceivableCollection(ctx, "owner", receivable.ID(), amount, posted.ID(), testIdempotencyKey(t, "linked-collection"))
 	if err != nil || collection.LedgerTransactionID() != posted.ID() || collection.ResultingStatus() != domainschedule.CollectedReceivable() {
 		t.Fatalf("linked collection = %+v, error = %v", collection, err)
 	}
 
-	reuseReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Second reimbursement", amount, &date, domainschedule.Confirmed(), testIdempotencyKey(t, "reuse-receivable"))
+	reuseReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Second reimbursement", amount, &date, domainschedule.Confirmed(), domainschedule.ExactAmount(), exactDateProvenancePointer(), testIdempotencyKey(t, "reuse-receivable"))
 	if _, err := scheduleService.RecordReceivableCollection(ctx, "owner", reuseReceivable.ID(), amount, posted.ID(), testIdempotencyKey(t, "reuse-ledger-link")); !errors.Is(err, applicationledger.ErrConflict) {
 		t.Fatalf("reused ledger transaction error = %v", err)
 	}
@@ -247,7 +255,7 @@ func TestReceivableCollectionCanLinkCompatibleLedgerInflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	amountReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Amount mismatch", amount, &date, domainschedule.Confirmed(), testIdempotencyKey(t, "amount-mismatch-receivable"))
+	amountReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Amount mismatch", amount, &date, domainschedule.Confirmed(), domainschedule.ExactAmount(), exactDateProvenancePointer(), testIdempotencyKey(t, "amount-mismatch-receivable"))
 	if _, err := scheduleService.RecordReceivableCollection(ctx, "owner", amountReceivable.ID(), amount, wrongAmountTransaction.ID(), testIdempotencyKey(t, "amount-mismatch-link")); err == nil {
 		t.Fatal("amount-mismatched ledger link succeeded")
 	}
@@ -256,7 +264,7 @@ func TestReceivableCollectionCanLinkCompatibleLedgerInflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	effectReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Effect mismatch", amount, &date, domainschedule.Confirmed(), testIdempotencyKey(t, "effect-mismatch-receivable"))
+	effectReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Effect mismatch", amount, &date, domainschedule.Confirmed(), domainschedule.ExactAmount(), exactDateProvenancePointer(), testIdempotencyKey(t, "effect-mismatch-receivable"))
 	if _, err := scheduleService.RecordReceivableCollection(ctx, "owner", effectReceivable.ID(), amount, wrongEffectTransaction.ID(), testIdempotencyKey(t, "effect-mismatch-link")); err == nil {
 		t.Fatal("effect-mismatched ledger link succeeded")
 	}
@@ -274,7 +282,7 @@ func TestReceivableCollectionCanLinkCompatibleLedgerInflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	crossOwnerReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Cross-owner link", amount, &date, domainschedule.Confirmed(), testIdempotencyKey(t, "cross-owner-receivable"))
+	crossOwnerReceivable, _ := scheduleService.CreateReceivable(ctx, "owner", "Cross-owner link", amount, &date, domainschedule.Confirmed(), domainschedule.ExactAmount(), exactDateProvenancePointer(), testIdempotencyKey(t, "cross-owner-receivable"))
 	if _, err := scheduleService.RecordReceivableCollection(ctx, "owner", crossOwnerReceivable.ID(), amount, otherTransaction.ID(), testIdempotencyKey(t, "cross-owner-link")); err == nil {
 		t.Fatal("cross-owner ledger link succeeded")
 	}
@@ -288,7 +296,7 @@ func TestConcurrentCollectionRetryDoesNotDoubleCollect(t *testing.T) {
 	createTestOwner(t, pool, "owner", now)
 	service, _ := applicationschedule.NewService(NewScheduleRepository(pool), applicationschedule.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
 	original, _ := money.New(1_000_00, money.MXN())
-	receivable, _ := service.CreateReceivable(ctx, "owner", "Debt", original, nil, domainschedule.Expected(), testIdempotencyKey(t, "concurrent-receivable"))
+	receivable, _ := service.CreateReceivable(ctx, "owner", "Debt", original, nil, domainschedule.Expected(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, "concurrent-receivable"))
 	partial, _ := money.New(250_00, money.MXN())
 	key := testIdempotencyKey(t, "concurrent-collection")
 	results := make(chan domainschedule.ReceivableCollection, 2)
@@ -337,7 +345,7 @@ func TestConcurrentDifferentKeyCollectionsCannotOverCollect(t *testing.T) {
 	createTestOwner(t, pool, "owner", now)
 	service, _ := applicationschedule.NewService(NewScheduleRepository(pool), applicationschedule.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
 	original, _ := money.New(10_000_00, money.MXN())
-	receivable, err := service.CreateReceivable(ctx, "owner", "Concurrent debt", original, nil, domainschedule.Expected(), testIdempotencyKey(t, "different-key-receivable"))
+	receivable, err := service.CreateReceivable(ctx, "owner", "Concurrent debt", original, nil, domainschedule.Expected(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, "different-key-receivable"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +405,7 @@ func TestScheduleDatabaseIntegrity(t *testing.T) {
 	date := mustFinancialDate(t, "2026-08-15")
 	obligation, _ := service.CreateObligation(ctx, "owner", "Payment", amount, domainschedule.OneTime(), date, nil, testIdempotencyKey(t, "integrity-obligation"))
 	flow, _ := service.CreateManualScheduledFlow(ctx, "owner", amount, domainschedule.Outflow(), date, domainschedule.ManualOtherSource(), domainschedule.ExactAmount(), domainschedule.ExactDate(), domainschedule.EligibleForPolicy(), testIdempotencyKey(t, "integrity-flow"))
-	receivable, _ := service.CreateReceivable(ctx, "owner", "Receivable", amount, nil, domainschedule.Uncertain(), testIdempotencyKey(t, "integrity-receivable"))
+	receivable, _ := service.CreateReceivable(ctx, "owner", "Receivable", amount, nil, domainschedule.Uncertain(), domainschedule.ExactAmount(), nil, testIdempotencyKey(t, "integrity-receivable"))
 	partial, _ := money.New(10_00, money.MXN())
 	collection, _ := service.RecordReceivableCollection(ctx, "owner", receivable.ID(), partial, "", testIdempotencyKey(t, "integrity-collection"))
 	derivedOccurrence, _ := domainschedule.NewObligationOccurrence("derived-occurrence", obligation, date)
@@ -418,6 +426,7 @@ func TestScheduleDatabaseIntegrity(t *testing.T) {
 		`UPDATE scheduled_cash_flows SET amount_minor = amount_minor + 1 WHERE id = '` + flow.ID() + `'`,
 		`DELETE FROM scheduled_cash_flows WHERE id = '` + flow.ID() + `'`,
 		`UPDATE receivables SET original_amount_minor = original_amount_minor + 1 WHERE id = '` + receivable.ID() + `'`,
+		`UPDATE receivables SET amount_provenance = 'estimated' WHERE id = '` + receivable.ID() + `'`,
 		`DELETE FROM receivables WHERE id = '` + receivable.ID() + `'`,
 		`UPDATE receivable_collections SET amount_minor = amount_minor + 1 WHERE id = '` + collection.ID() + `'`,
 		`DELETE FROM receivable_collections WHERE id = '` + collection.ID() + `'`,
@@ -432,6 +441,22 @@ func TestScheduleDatabaseIntegrity(t *testing.T) {
 		VALUES ('wrong-owner-obligation', 'missing-owner', 'Wrong', 1, 'MXN', 'outflow', 'one_time', '2026-08-15', 'active', $1, $1)`, now)
 	if !hasPostgresCode(err, "23503") {
 		t.Fatalf("cross-owner obligation error = %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO receivables
+			(id, owner_id, display_name, original_amount_minor, collected_amount_minor, currency, status, certainty, created_at, updated_at)
+		VALUES ('missing-provenance', 'owner', 'Missing provenance', 1, 0, 'MXN', 'open', 'confirmed', $1, $1)`, now)
+	if !hasPostgresCode(err, "23502") {
+		t.Fatalf("missing receivable provenance error = %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO receivables
+			(id, owner_id, display_name, original_amount_minor, collected_amount_minor, currency, status,
+			 expected_date, certainty, amount_provenance, date_provenance, created_at, updated_at)
+		VALUES ('undated-with-date-provenance', 'owner', 'Invalid provenance', 1, 0, 'MXN', 'open',
+		        NULL, 'uncertain', 'exact', 'exact', $1, $1)`, now)
+	if !hasPostgresCode(err, "23514") {
+		t.Fatalf("undated receivable date provenance error = %v", err)
 	}
 	_, err = pool.Exec(ctx, `
 		INSERT INTO scheduled_cash_flows

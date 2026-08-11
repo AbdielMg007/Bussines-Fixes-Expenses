@@ -142,7 +142,8 @@ func (s *Service) CancelScheduledFlow(ctx context.Context, ownerID, flowID strin
 
 func (s *Service) CreateReceivable(
 	ctx context.Context, ownerID, name string, originalAmount money.Money, expectedDate *financialdate.Date,
-	certainty domainschedule.Certainty, key applicationledger.IdempotencyKey,
+	certainty domainschedule.Certainty, amountProvenance domainschedule.AmountProvenance,
+	dateProvenance *domainschedule.DateProvenance, key applicationledger.IdempotencyKey,
 ) (domainschedule.Receivable, error) {
 	if err := validateOwner(ownerID); err != nil {
 		return domainschedule.Receivable{}, err
@@ -151,14 +152,25 @@ func (s *Service) CreateReceivable(
 	if err != nil {
 		return domainschedule.Receivable{}, err
 	}
-	receivable, err := domainschedule.NewReceivable(id, ownerID, name, originalAmount, expectedDate, certainty, s.clock().UTC())
+	receivable, err := domainschedule.NewReceivable(
+		id, ownerID, name, originalAmount, expectedDate, certainty,
+		amountProvenance, dateProvenance, s.clock().UTC(),
+	)
 	if err != nil {
 		return domainschedule.Receivable{}, err
 	}
 	return s.repository.CreateReceivable(ctx, receivable, mutation(key,
 		"v1", "create_receivable", ownerID, receivable.DisplayName(), strconv.FormatInt(originalAmount.MinorUnits(), 10),
-		originalAmount.Currency().Code(), optionalDate(expectedDate), certainty.String(),
+		originalAmount.Currency().Code(), optionalDate(expectedDate), certainty.String(), amountProvenance.String(),
+		optionalDateProvenance(dateProvenance),
 	))
+}
+
+func optionalDateProvenance(value *domainschedule.DateProvenance) string {
+	if value == nil {
+		return ""
+	}
+	return value.String()
 }
 
 func (s *Service) GetReceivable(ctx context.Context, ownerID, receivableID string) (domainschedule.Receivable, error) {

@@ -80,6 +80,8 @@ type createReceivableRequest struct {
 	Currency            string  `json:"currency"`
 	ExpectedDate        *string `json:"expected_date"`
 	Certainty           string  `json:"certainty"`
+	AmountProvenance    string  `json:"amount_provenance"`
+	DateProvenance      *string `json:"date_provenance"`
 }
 
 type receivableResponse struct {
@@ -92,6 +94,8 @@ type receivableResponse struct {
 	Status               string    `json:"status"`
 	ExpectedDate         *string   `json:"expected_date"`
 	Certainty            string    `json:"certainty"`
+	AmountProvenance     string    `json:"amount_provenance"`
+	DateProvenance       *string   `json:"date_provenance"`
 	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
 }
@@ -354,7 +358,28 @@ func (h scheduleHandler) createReceivable(w http.ResponseWriter, r *http.Request
 		writeScheduleError(w, err)
 		return
 	}
-	created, err := h.schedule.CreateReceivable(r.Context(), ownerID, input.Name, amount, expectedDate, certainty, key)
+	amountProvenance, err := domainschedule.ParseAmountProvenance(input.AmountProvenance)
+	if err != nil {
+		writeScheduleError(w, err)
+		return
+	}
+	var dateProvenance *domainschedule.DateProvenance
+	if input.DateProvenance != nil {
+		value, err := domainschedule.ParseDateProvenance(*input.DateProvenance)
+		if err != nil || value.IsScenarioAssumed() {
+			writeScheduleError(w, domainschedule.ErrInvalidProvenance)
+			return
+		}
+		dateProvenance = &value
+	}
+	if (expectedDate == nil) != (dateProvenance == nil) {
+		writeScheduleError(w, domainschedule.ErrInvalidProvenance)
+		return
+	}
+	created, err := h.schedule.CreateReceivable(
+		r.Context(), ownerID, input.Name, amount, expectedDate, certainty,
+		amountProvenance, dateProvenance, key,
+	)
 	if err != nil {
 		writeScheduleError(w, err)
 		return
@@ -510,12 +535,16 @@ func mapScheduledFlow(value domainschedule.ScheduledCashFlow) scheduledFlowRespo
 
 func mapReceivable(value domainschedule.Receivable) receivableResponse {
 	var expected *string
+	var dateProvenance *string
 	if date, ok := value.ExpectedDate(); ok {
 		text := date.String()
 		expected = &text
+		provenance, _ := value.DateProvenance()
+		provenanceText := provenance.String()
+		dateProvenance = &provenanceText
 	}
 	outstanding, _ := value.OutstandingAmount()
-	return receivableResponse{ID: value.ID(), Name: value.DisplayName(), OriginalAmountMinor: value.OriginalAmount().MinorUnits(), CollectedAmountMinor: value.CollectedAmount().MinorUnits(), OutstandingMinor: outstanding.MinorUnits(), Currency: value.OriginalAmount().Currency().Code(), Status: value.Status().String(), ExpectedDate: expected, Certainty: value.Certainty().String(), CreatedAt: value.CreatedAt(), UpdatedAt: value.UpdatedAt()}
+	return receivableResponse{ID: value.ID(), Name: value.DisplayName(), OriginalAmountMinor: value.OriginalAmount().MinorUnits(), CollectedAmountMinor: value.CollectedAmount().MinorUnits(), OutstandingMinor: outstanding.MinorUnits(), Currency: value.OriginalAmount().Currency().Code(), Status: value.Status().String(), ExpectedDate: expected, Certainty: value.Certainty().String(), AmountProvenance: value.AmountProvenance().String(), DateProvenance: dateProvenance, CreatedAt: value.CreatedAt(), UpdatedAt: value.UpdatedAt()}
 }
 
 func mapCollection(value domainschedule.ReceivableCollection) collectionResponse {

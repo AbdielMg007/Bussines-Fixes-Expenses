@@ -10,6 +10,7 @@ import (
 	"runway/backend/internal/domain/financialdate"
 	domainledger "runway/backend/internal/domain/ledger"
 	"runway/backend/internal/domain/money"
+	domainprojection "runway/backend/internal/domain/projection"
 	domainschedule "runway/backend/internal/domain/schedule"
 	applicationledger "runway/backend/internal/ledger"
 )
@@ -48,17 +49,28 @@ type ScheduleService interface {
 	GetScheduledFlow(context.Context, string, string) (domainschedule.ScheduledCashFlow, error)
 	ListScheduledFlows(context.Context, string) ([]domainschedule.ScheduledCashFlow, error)
 	CancelScheduledFlow(context.Context, string, string, applicationledger.IdempotencyKey) (domainschedule.ScheduledCashFlow, error)
-	CreateReceivable(context.Context, string, string, money.Money, *financialdate.Date, domainschedule.Certainty, applicationledger.IdempotencyKey) (domainschedule.Receivable, error)
+	CreateReceivable(context.Context, string, string, money.Money, *financialdate.Date, domainschedule.Certainty, domainschedule.AmountProvenance, *domainschedule.DateProvenance, applicationledger.IdempotencyKey) (domainschedule.Receivable, error)
 	GetReceivable(context.Context, string, string) (domainschedule.Receivable, error)
 	ListReceivables(context.Context, string) ([]domainschedule.Receivable, error)
 	RecordReceivableCollection(context.Context, string, string, money.Money, string, applicationledger.IdempotencyKey) (domainschedule.ReceivableCollection, error)
 	CancelReceivable(context.Context, string, string, applicationledger.IdempotencyKey) (domainschedule.Receivable, error)
 }
 
-func NewHandler(authentication AuthenticationService, financial LedgerService, future ScheduleService, authConfig AuthConfig) http.Handler {
+type ProjectionService interface {
+	GetPolicy(context.Context, string) (domainprojection.Policy, error)
+	ReplacePolicy(context.Context, string, money.Currency, int, money.Money, string, domainprojection.AccountSelection, domainprojection.InflowPolicy, domainprojection.SameDayOrder) (domainprojection.Policy, error)
+	CalculateBaseline(context.Context, string) (domainprojection.Result, error)
+}
+
+func NewHandler(authentication AuthenticationService, financial LedgerService, future ScheduleService, authConfig AuthConfig, projectionServices ...ProjectionService) http.Handler {
+	var projections ProjectionService
+	if len(projectionServices) > 0 {
+		projections = projectionServices[0]
+	}
 	authenticationHandler := authHandler{authentication: authentication, config: authConfig}
 	financialHandler := ledgerHandler{authentication: authentication, ledger: financial, config: authConfig}
 	futureHandler := scheduleHandler{authentication: authentication, schedule: future, config: authConfig}
+	projectionHandler := projectionHandler{authentication: authentication, projection: projections, config: authConfig}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("POST /api/v1/auth/login", authenticationHandler.login)
@@ -87,5 +99,8 @@ func NewHandler(authentication AuthenticationService, financial LedgerService, f
 	mux.HandleFunc("GET /api/v1/receivables/{id}", futureHandler.getReceivable)
 	mux.HandleFunc("POST /api/v1/receivables/{id}/collections", futureHandler.recordReceivableCollection)
 	mux.HandleFunc("POST /api/v1/receivables/{id}/cancel", futureHandler.cancelReceivable)
+	mux.HandleFunc("GET /api/v1/projection-policy", projectionHandler.getPolicy)
+	mux.HandleFunc("PUT /api/v1/projection-policy", projectionHandler.replacePolicy)
+	mux.HandleFunc("GET /api/v1/projection", projectionHandler.calculate)
 	return mux
 }

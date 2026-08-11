@@ -9,16 +9,18 @@ import (
 )
 
 type Receivable struct {
-	id              string
-	ownerID         string
-	name            string
-	originalAmount  money.Money
-	collectedAmount money.Money
-	status          ReceivableStatus
-	expectedDate    *financialdate.Date
-	certainty       Certainty
-	createdAt       time.Time
-	updatedAt       time.Time
+	id               string
+	ownerID          string
+	name             string
+	originalAmount   money.Money
+	collectedAmount  money.Money
+	status           ReceivableStatus
+	expectedDate     *financialdate.Date
+	certainty        Certainty
+	amountProvenance AmountProvenance
+	dateProvenance   *DateProvenance
+	createdAt        time.Time
+	updatedAt        time.Time
 }
 
 func NewReceivable(
@@ -26,13 +28,18 @@ func NewReceivable(
 	originalAmount money.Money,
 	expectedDate *financialdate.Date,
 	certainty Certainty,
+	amountProvenance AmountProvenance,
+	dateProvenance *DateProvenance,
 	now time.Time,
 ) (Receivable, error) {
 	zero, err := money.Zero(originalAmount.Currency())
 	if err != nil {
 		return Receivable{}, err
 	}
-	return RestoreReceivable(id, ownerID, displayName, originalAmount, zero, OpenReceivable(), expectedDate, certainty, now, now)
+	return RestoreReceivable(
+		id, ownerID, displayName, originalAmount, zero, OpenReceivable(), expectedDate,
+		certainty, amountProvenance, dateProvenance, now, now,
+	)
 }
 
 func RestoreReceivable(
@@ -41,6 +48,8 @@ func RestoreReceivable(
 	status ReceivableStatus,
 	expectedDate *financialdate.Date,
 	certainty Certainty,
+	amountProvenance AmountProvenance,
+	dateProvenance *DateProvenance,
 	createdAt, updatedAt time.Time,
 ) (Receivable, error) {
 	name := strings.TrimSpace(displayName)
@@ -60,9 +69,18 @@ func RestoreReceivable(
 	if _, err := ParseCertainty(certainty.String()); err != nil {
 		return Receivable{}, err
 	}
+	if _, err := ParseAmountProvenance(amountProvenance.String()); err != nil {
+		return Receivable{}, err
+	}
+	if (expectedDate == nil) != (dateProvenance == nil) {
+		return Receivable{}, ErrInvalidProvenance
+	}
 	if expectedDate != nil {
 		if _, err := financialdate.Parse(expectedDate.String()); err != nil {
 			return Receivable{}, err
+		}
+		if _, err := ParseDateProvenance(dateProvenance.String()); err != nil || dateProvenance.IsScenarioAssumed() {
+			return Receivable{}, ErrInvalidProvenance
 		}
 	}
 	if status != CancelledReceivable() {
@@ -79,14 +97,18 @@ func RestoreReceivable(
 	}
 
 	var copiedDate *financialdate.Date
+	var copiedDateProvenance *DateProvenance
 	if expectedDate != nil {
 		value := *expectedDate
 		copiedDate = &value
+		provenance := *dateProvenance
+		copiedDateProvenance = &provenance
 	}
 	return Receivable{
 		id: id, ownerID: ownerID, name: name, originalAmount: originalAmount,
 		collectedAmount: collectedAmount, status: status, expectedDate: copiedDate,
-		certainty: certainty, createdAt: createdAt.UTC(), updatedAt: updatedAt.UTC(),
+		certainty: certainty, amountProvenance: amountProvenance, dateProvenance: copiedDateProvenance,
+		createdAt: createdAt.UTC(), updatedAt: updatedAt.UTC(),
 	}, nil
 }
 
@@ -153,20 +175,28 @@ func (r Receivable) OutstandingAmount() (money.Money, error) {
 	return r.originalAmount.Subtract(r.collectedAmount)
 }
 
-func (r Receivable) ID() string                   { return r.id }
-func (r Receivable) OwnerID() string              { return r.ownerID }
-func (r Receivable) DisplayName() string          { return r.name }
-func (r Receivable) OriginalAmount() money.Money  { return r.originalAmount }
-func (r Receivable) CollectedAmount() money.Money { return r.collectedAmount }
-func (r Receivable) Status() ReceivableStatus     { return r.status }
-func (r Receivable) Certainty() Certainty         { return r.certainty }
-func (r Receivable) CreatedAt() time.Time         { return r.createdAt }
-func (r Receivable) UpdatedAt() time.Time         { return r.updatedAt }
+func (r Receivable) ID() string                         { return r.id }
+func (r Receivable) OwnerID() string                    { return r.ownerID }
+func (r Receivable) DisplayName() string                { return r.name }
+func (r Receivable) OriginalAmount() money.Money        { return r.originalAmount }
+func (r Receivable) CollectedAmount() money.Money       { return r.collectedAmount }
+func (r Receivable) Status() ReceivableStatus           { return r.status }
+func (r Receivable) Certainty() Certainty               { return r.certainty }
+func (r Receivable) AmountProvenance() AmountProvenance { return r.amountProvenance }
+func (r Receivable) CreatedAt() time.Time               { return r.createdAt }
+func (r Receivable) UpdatedAt() time.Time               { return r.updatedAt }
 func (r Receivable) ExpectedDate() (financialdate.Date, bool) {
 	if r.expectedDate == nil {
 		return financialdate.Date{}, false
 	}
 	return *r.expectedDate, true
+}
+
+func (r Receivable) DateProvenance() (DateProvenance, bool) {
+	if r.dateProvenance == nil {
+		return DateProvenance{}, false
+	}
+	return *r.dateProvenance, true
 }
 
 type ReceivableCollection struct {

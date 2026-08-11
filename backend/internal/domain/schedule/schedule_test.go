@@ -164,7 +164,7 @@ func TestScheduledCashFlowProvenanceAndCancellation(t *testing.T) {
 func TestReceivableCollectionConservesAmount(t *testing.T) {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	original, _ := money.New(35_000_00, money.MXN())
-	receivable, err := NewReceivable("receivable", "owner", "Family business", original, nil, Uncertain(), now)
+	receivable, err := NewReceivable("receivable", "owner", "Family business", original, nil, Uncertain(), ExactAmount(), nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,10 +191,47 @@ func TestReceivableCollectionConservesAmount(t *testing.T) {
 	}
 }
 
+func TestReceivableCertaintyAndProvenanceAreIndependent(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	amount, _ := money.New(10_000, money.MXN())
+	date, _ := financialdate.Parse("2026-09-01")
+	tests := []struct {
+		name             string
+		certainty        Certainty
+		amountProvenance AmountProvenance
+		dateProvenance   DateProvenance
+	}{
+		{name: "confirmed estimated date", certainty: Confirmed(), amountProvenance: ExactAmount(), dateProvenance: EstimatedDate()},
+		{name: "confirmed exact date", certainty: Confirmed(), amountProvenance: ExactAmount(), dateProvenance: ExactDate()},
+		{name: "expected exact date", certainty: Expected(), amountProvenance: ExactAmount(), dateProvenance: ExactDate()},
+		{name: "expected estimated amount and date", certainty: Expected(), amountProvenance: EstimatedAmount(), dateProvenance: EstimatedDate()},
+		{name: "uncertain exact fields", certainty: Uncertain(), amountProvenance: ExactAmount(), dateProvenance: ExactDate()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			receivable, err := NewReceivable("receivable", "owner", test.name, amount, &date, test.certainty, test.amountProvenance, &test.dateProvenance, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			storedDateProvenance, ok := receivable.DateProvenance()
+			if receivable.Certainty() != test.certainty || receivable.AmountProvenance() != test.amountProvenance || !ok || storedDateProvenance != test.dateProvenance {
+				t.Fatalf("receivable metadata = certainty %s amount %s date %s", receivable.Certainty().String(), receivable.AmountProvenance().String(), storedDateProvenance.String())
+			}
+		})
+	}
+	if _, err := NewReceivable("missing-date-provenance", "owner", "Missing", amount, &date, Confirmed(), ExactAmount(), nil, now); !errors.Is(err, ErrInvalidProvenance) {
+		t.Fatalf("missing date provenance error = %v", err)
+	}
+	exactDate := ExactDate()
+	if _, err := NewReceivable("undated-with-provenance", "owner", "Undated", amount, nil, Uncertain(), ExactAmount(), &exactDate, now); !errors.Is(err, ErrInvalidProvenance) {
+		t.Fatalf("undated provenance error = %v", err)
+	}
+}
+
 func TestReceivableRejectsOverCollectionAndCollectionAfterCancellation(t *testing.T) {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	original, _ := money.New(100, money.MXN())
-	receivable, _ := NewReceivable("receivable", "owner", "Reimbursement", original, nil, Confirmed(), now)
+	receivable, _ := NewReceivable("receivable", "owner", "Reimbursement", original, nil, Confirmed(), ExactAmount(), nil, now)
 	tooMuch, _ := money.New(101, money.MXN())
 	if _, _, err := receivable.RecordCollection("collection", tooMuch, "", now.Add(time.Hour)); !errors.Is(err, ErrCollectionExceedsAmount) {
 		t.Fatalf("over-collection error = %v", err)

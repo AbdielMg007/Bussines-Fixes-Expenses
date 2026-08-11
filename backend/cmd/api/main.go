@@ -18,6 +18,7 @@ import (
 	"runway/backend/internal/httpapi"
 	"runway/backend/internal/ledger"
 	"runway/backend/internal/postgres"
+	"runway/backend/internal/projection"
 	"runway/backend/internal/schedule"
 )
 
@@ -59,6 +60,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	baselineProjection, err := projection.NewService(postgres.NewProjectionRepository(pool), projection.ServiceOptions{})
+	if err != nil {
+		return err
+	}
 
 	address := net.JoinHostPort(configuration.Host, configuration.Port)
 	server := &http.Server{
@@ -67,7 +72,7 @@ func run() error {
 			AllowedOrigin:        configuration.ApplicationOrigin,
 			CookieSecure:         configuration.CookieSecure,
 			SessionMaxAgeSeconds: int(configuration.SessionDuration / time.Second),
-		}),
+		}, baselineProjection),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
