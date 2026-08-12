@@ -456,7 +456,7 @@ func loadCardPaymentIssues(ctx context.Context, tx pgx.Tx, ownerID string, asOf,
 		LEFT JOIN credit_card_payment_intents i ON i.cycle_id=c.id
 		LEFT JOIN scheduled_cash_flows f ON f.owner_id=c.owner_id AND f.source_kind='credit_card_payment_intent' AND f.source_id=i.id AND f.status='scheduled'
 		WHERE c.owner_id=$1 AND s.statement_balance_minor>0
-		  AND (s.due_date BETWEEN $2::date AND $3::date OR i.planned_date <= $2::date)
+		  AND (s.due_date <= $3::date OR i.planned_date <= $2::date)
 		GROUP BY c.id,i.id,i.status,i.planned_date,s.due_date,s.statement_balance_minor
 		ORDER BY c.id`, ownerID, asOf.String(), horizonEnd.String())
 	if err != nil {

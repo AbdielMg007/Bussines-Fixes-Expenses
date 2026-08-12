@@ -67,6 +67,37 @@ func TestCardPaymentIssuesTreatPastAndTodayActiveFlowsAsIndeterminate(t *testing
 	}
 }
 
+func TestPastDueStatementWithoutIntentMakesProjectionAndSafeToSpendIndeterminate(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ledgerService, _ := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	projectionService, _ := applicationprojection.NewService(NewProjectionRepository(pool), applicationprojection.ServiceOptions{Clock: func() time.Time { return now }})
+	bank := createTestAccount(t, ledgerService, "owner", "Bank", account.Bank())
+	cardAccount := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	openingDate := projectionTestDate(t, "2026-08-10")
+	postProjectionTransaction(t, ledgerService, bank.ID(), domainledger.AssetInflow(), 1_000_000, openingDate, "opening-bank")
+	cards := NewCardRepository(pool)
+	if _, err := cards.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", cardAccount.ID(), domaincard.Issued, 280_000, "2026-08-09", "past-due-missing-intent"), "statement", now); err != nil {
+		t.Fatal(err)
+	}
+	reserve, _ := money.Zero(money.MXN())
+	all, _ := domainprojection.NewAccountSelection(domainprojection.AllActiveLiquidSelection(), nil)
+	if _, err := projectionService.ReplacePolicy(ctx, "owner", money.MXN(), 30, reserve, "America/Mexico_City", all, domainprojection.ConfirmedInflowsOnly(), domainprojection.OutflowsBeforeInflows()); err != nil {
+		t.Fatal(err)
+	}
+
+	projection, err := projectionService.CalculateBaseline(ctx, "owner")
+	if err != nil || projection.Completeness != domainprojection.ProjectionIndeterminate || len(projection.Issues) != 1 || projection.Issues[0].Code != "card_payment_intent_missing" {
+		t.Fatalf("past-due missing intent projection=%+v err=%v", projection, err)
+	}
+	safe, err := projectionService.CalculateSafeToSpend(ctx, "owner", bank.ID())
+	if err != nil || safe.Status != domainprojection.IndeterminateStatus() || safe.SafeToSpend.MinorUnits() != 0 || safe.IndeterminateReason != "card_payment_intent_missing" {
+		t.Fatalf("past-due missing intent safe-to-spend=%+v err=%v", safe, err)
+	}
+}
+
 func TestProjectionRepositoryPolicySelectionPersistenceAndOwnerIsolation(t *testing.T) {
 	pool := newIsolatedTestDatabase(t)
 	ctx := context.Background()
