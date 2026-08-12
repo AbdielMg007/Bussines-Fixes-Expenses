@@ -39,7 +39,9 @@ func TestCardPaymentIssuesTreatPastAndTodayActiveFlowsAsIndeterminate(t *testing
 		t.Fatal(err)
 	}
 	asOf := cardTestDate(t, "2026-08-10")
-	end := cardTestDate(t, "2026-09-09")
+	// The statement due date lies beyond this intentionally short horizon. A
+	// past active plan is still unresolved and must not disappear optimistically.
+	end := cardTestDate(t, "2026-08-11")
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		t.Fatal(err)

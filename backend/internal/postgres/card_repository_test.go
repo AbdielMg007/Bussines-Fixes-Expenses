@@ -199,7 +199,6 @@ func TestPaymentIntentSettlementSummaryUsesOnlyExplicitSettlements(t *testing.T)
 	ctx := context.Background()
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	createTestOwner(t, pool, "owner", now)
-	createTestOwner(t, pool, "other-owner", now)
 	ledgerService, err := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
 	if err != nil {
 		t.Fatal(err)
@@ -208,6 +207,10 @@ func TestPaymentIntentSettlementSummaryUsesOnlyExplicitSettlements(t *testing.T)
 	creditCard := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
 	cards := NewCardRepository(pool)
 	intentAmount, _ := money.New(280_000, money.MXN())
+	liabilityAmount, _ := money.New(330_000, money.MXN())
+	if _, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), liabilityAmount, cardTestDate(t, "2026-08-10"), "card charge", testIdempotencyKey(t, "summary-card-charge")); err != nil {
+		t.Fatal(err)
+	}
 	statement, err := cards.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", creditCard.ID(), domaincard.Issued, 280_000, "2026-09-09", "summary-statement"), "summary-statement", now)
 	if err != nil {
 		t.Fatal(err)

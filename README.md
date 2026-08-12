@@ -160,6 +160,7 @@ Create an atomic same-currency transfer (use a credit-card account as the destin
 ```sh
 curl -sS -b /tmp/runway-cookies.txt \
   -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-transfer-001' \
   --data '{"source_account_id":"BANK_ID","destination_account_id":"CASH_OR_CARD_ID","amount_minor":50000,"currency":"MXN","financial_date":"2026-08-10","memo":"Internal transfer"}' \
   http://127.0.0.1:8080/api/v1/transfers
 ```
@@ -220,9 +221,11 @@ curl -sS -b /tmp/runway-cookies.txt \
 
 The read-only calculation reuses the baseline projection. It subtracts the configured reserve from the baseline minimum balance, never returns a negative amount, and caps the result at the funding account's reconstructed balance. A baseline already below reserve returns zero with breach details. Credit-card and loan funding return `unsupported_funding_type`; available credit is never liquidity. No hypothetical purchase or result is persisted.
 
-## Credit-card statements and MSI principal lineage
+## Credit-card statements, PaymentIntent, and MSI
 
-Credit-card statement revisions and one current `PaymentIntent` per logical cycle are available through the authenticated API. Issue 12 also adds 0% MSI `InstallmentPlan`s. A plan must reference the already-posted matching credit-card `liability_charge` that created the purchase principal; creating the plan never posts another charge. Its integer-minor-unit allocations attach to logical card cycles, assign any remainder to the earliest installments, and do not create a cash flow or modify issuer statement facts. Explicit plan/allocation principal-payment records are the only way MSI outstanding principal changes; an ordinary card payment is never inferred to settle MSI.
+Runway v1.1 supports immutable credit-card statement revisions, one current `PaymentIntent` per logical cycle, 0% MSI `InstallmentPlan` principal lineage, and explicit PaymentIntent settlements. A plan must reference the already-posted matching credit-card `liability_charge` that created the purchase principal; creating the plan never posts another charge. Its integer-minor-unit allocations attach to logical card cycles, assign any remainder to the earliest installments, and do not modify issuer statement facts. Explicit plan/allocation principal-payment records are the only way MSI outstanding principal changes; an ordinary card payment is never inferred to settle MSI.
+
+For card cash flow, a valid current PaymentIntent is the one authoritative future outflow for its cycle. Statement balances, PPNGI, and MSI allocations are context and lineage only; they are never independent projected cash outflows. A user may explicitly link an already-posted bank/cash → card transfer to an intent as a settlement. The backend derives `settled_amount_minor` and `remaining_amount_minor` from that explicit lineage; generic card transfers never settle an intent automatically. A missing, cancelled, needs-review, due-today-unsettled, or past-due-unsettled intent makes Projection indeterminate and Safe-to-Spend unavailable rather than optimistic. Available credit is never liquidity.
 
 Create a plan with an idempotency key after posting the original card purchase:
 
@@ -234,10 +237,14 @@ curl -sS -b /tmp/runway-cookies.txt \
   http://127.0.0.1:8080/api/v1/credit-cards/CARD_ACCOUNT_ID/installment-plans
 ```
 
-Issue 12 deliberately does not project card payments, create `ScheduledCashFlow`s, calculate Safe-to-Spend from cards, settle generic card payments automatically, or add frontend UI.
+The ES/EN PWA exposes accounts, ledger movements, transfers, ProjectionPolicy, deterministic Projection, Safe-to-Spend, card statements, PaymentIntent management, MSI plan/allocation inspection, and explicit PaymentIntent settlements. Normal v1.1 use does not require Postman.
+
+## v1.1 boundaries
+
+Runway v1.1 has no AI financial calculations, PDF/OCR statement import, automatic bank matching or payment reconciliation, interest simulation, or automatic MSI attribution from generic card payments. It never treats available credit as liquid cash. Projection and Safe-to-Spend remain deterministic backend calculations; the frontend only displays backend financial truth.
 
 ## Project status
 
-Issue 9 provides the minimal authenticated Runway frontend: login, dashboard, Safe-to-Spend, projection timeline, accounts, manual transactions, transfers, and ProjectionPolicy setup. AI integration, PDF ingestion, interest-bearing installment plans, CI/CD, and production deployment are **not implemented**.
+Runway v1.1 provides owner authentication, accounts, immutable ledger transactions, linked transfers, obligations, receivables, deterministic Projection, funding-specific Safe-to-Spend, card statements, PaymentIntent, MSI principal lineage, explicit card-payment settlements, card-aware Projection/Safe-to-Spend, and an ES/EN PWA. AI integration, PDF ingestion, automatic reconciliation, interest-bearing installment plans, CI/CD, and production deployment are **not implemented**.
 
 Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).
