@@ -33,8 +33,14 @@ type BaselineState struct {
 	Accounts    []AccountBalance
 	Obligations []schedule.Obligation
 	ManualFlows []schedule.ScheduledCashFlow
+	CardFlows   []schedule.ScheduledCashFlow
+	CardIssues  []CardPaymentIssue
 	Receivables []schedule.Receivable
 }
+
+// CardPaymentIssue is loaded with the same database snapshot as the baseline.
+// It deliberately describes missing/invalid authority rather than guessing a card payment.
+type CardPaymentIssue struct{ Code, CycleID, PaymentIntentID string }
 
 type SafeToSpendState struct {
 	Baseline       BaselineState

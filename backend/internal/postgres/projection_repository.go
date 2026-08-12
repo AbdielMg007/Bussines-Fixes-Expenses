@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"runway/backend/internal/domain/account"
+	"runway/backend/internal/domain/financialdate"
 	"runway/backend/internal/domain/money"
 	domainprojection "runway/backend/internal/domain/projection"
 	domainschedule "runway/backend/internal/domain/schedule"
@@ -263,12 +264,28 @@ func (r *ProjectionRepository) loadProjectionState(ctx context.Context, ownerID 
 	if err != nil {
 		return applicationprojection.BaselineState{}, nil, err
 	}
+	cardIssues, err := loadCardPaymentIssues(ctx, tx, ownerID, asOf, horizonEnd)
+	if err != nil {
+		return applicationprojection.BaselineState{}, nil, err
+	}
+	manualFlows := make([]domainschedule.ScheduledCashFlow, 0, len(flows))
+	cardFlows := make([]domainschedule.ScheduledCashFlow, 0)
+	for _, flow := range flows {
+		if flow.SourceKind().IsManual() {
+			manualFlows = append(manualFlows, flow)
+		}
+		// Card flows are immutable historical lineage once cancelled or settled.
+		// Only the current scheduled remainder is a future projection event.
+		if flow.SourceKind().IsCreditCardPaymentIntent() && flow.Status().IsScheduled() {
+			cardFlows = append(cardFlows, flow)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return applicationprojection.BaselineState{}, nil, errors.New("load projection inputs")
 	}
 	return applicationprojection.BaselineState{
 		Policy: policy, AsOf: asOf, HorizonEnd: horizonEnd, Accounts: accountBalances,
-		Obligations: obligations, ManualFlows: flows, Receivables: receivables,
+		Obligations: obligations, ManualFlows: manualFlows, CardFlows: cardFlows, CardIssues: cardIssues, Receivables: receivables,
 	}, fundingAccount, nil
 }
 
@@ -428,6 +445,63 @@ func loadProjectionFlows(ctx context.Context, tx pgx.Tx, ownerID string) ([]doma
 		return nil, errors.New("load projection scheduled flows")
 	}
 	return result, nil
+}
+
+func loadCardPaymentIssues(ctx context.Context, tx pgx.Tx, ownerID string, asOf, horizonEnd financialdate.Date) ([]applicationprojection.CardPaymentIssue, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT c.id, COALESCE(i.id,''), COALESCE(i.status,''), s.due_date::text, COALESCE(i.planned_date::text,''),
+		       count(f.id), COALESCE(max(f.amount_minor),0), COALESCE(max(f.financial_date)::text,'')
+		FROM credit_card_cycles c
+		JOIN credit_card_statements s ON s.cycle_id=c.id AND s.superseded_at IS NULL
+		LEFT JOIN credit_card_payment_intents i ON i.cycle_id=c.id
+		LEFT JOIN scheduled_cash_flows f ON f.owner_id=c.owner_id AND f.source_kind='credit_card_payment_intent' AND f.source_id=i.id AND f.status='scheduled'
+		WHERE c.owner_id=$1 AND s.statement_balance_minor>0
+		  AND (s.due_date BETWEEN $2::date AND $3::date OR i.planned_date=$2::date)
+		GROUP BY c.id,i.id,i.status,i.planned_date,s.due_date,s.statement_balance_minor
+		ORDER BY c.id`, ownerID, asOf.String(), horizonEnd.String())
+	if err != nil {
+		return nil, errors.New("load card payment conditions")
+	}
+	defer rows.Close()
+	issues := make([]applicationprojection.CardPaymentIssue, 0)
+	for rows.Next() {
+		var cycleID, intentID, status, due, planned, flowDate string
+		var count, amount int64
+		if err := rows.Scan(&cycleID, &intentID, &status, &due, &planned, &count, &amount, &flowDate); err != nil {
+			return nil, err
+		}
+		if (due == asOf.String() || planned == asOf.String()) && status != "settled" {
+			if status != "settled" {
+				issues = append(issues, applicationprojection.CardPaymentIssue{Code: "card_payment_due_today_unsettled", CycleID: cycleID, PaymentIntentID: intentID})
+			}
+			continue
+		}
+		switch status {
+		case "":
+			issues = append(issues, applicationprojection.CardPaymentIssue{Code: "card_payment_intent_missing", CycleID: cycleID})
+		case "needs_review":
+			issues = append(issues, applicationprojection.CardPaymentIssue{Code: "card_payment_intent_needs_review", CycleID: cycleID, PaymentIntentID: intentID})
+		case "cancelled":
+			issues = append(issues, applicationprojection.CardPaymentIssue{Code: "card_payment_intent_missing", CycleID: cycleID, PaymentIntentID: intentID})
+		case "active":
+			if count != 1 || flowDate == "" {
+				issues = append(issues, applicationprojection.CardPaymentIssue{Code: "invalid_card_payment_flow", CycleID: cycleID, PaymentIntentID: intentID})
+			} else if flowDate == asOf.String() {
+				issues = append(issues, applicationprojection.CardPaymentIssue{Code: "card_payment_due_today_unsettled", CycleID: cycleID, PaymentIntentID: intentID})
+			} else if flowDate < asOf.String() {
+				issues = append(issues, applicationprojection.CardPaymentIssue{Code: "card_payment_past_due_unsettled", CycleID: cycleID, PaymentIntentID: intentID})
+			} else if flowDate > horizonEnd.String() {
+				issues = append(issues, applicationprojection.CardPaymentIssue{Code: "invalid_card_payment_flow", CycleID: cycleID, PaymentIntentID: intentID})
+			}
+		case "settled":
+		default:
+			issues = append(issues, applicationprojection.CardPaymentIssue{Code: "invalid_card_payment_flow", CycleID: cycleID, PaymentIntentID: intentID})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errors.New("load card payment conditions")
+	}
+	return issues, nil
 }
 
 func loadProjectionReceivables(ctx context.Context, tx pgx.Tx, ownerID string) ([]domainschedule.Receivable, error) {

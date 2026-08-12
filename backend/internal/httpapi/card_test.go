@@ -113,6 +113,10 @@ type fakeCardService struct {
 	recordPayment func(string, string, money.Money, ledger.MutationIdentity) (app.InstallmentPrincipalPaymentResult, error)
 }
 
+func (f *fakeCardService) SettleIntent(_ context.Context, _ string, _ app.PaymentIntentSettlementInput) (app.PaymentIntentSettlementResult, error) {
+	return app.PaymentIntentSettlementResult{}, nil
+}
+
 func (f *fakeCardService) RegisterStatement(_ context.Context, owner string, input app.StatementInput) (domain.Statement, error) {
 	if f.register == nil {
 		return domain.Statement{}, errors.New("unexpected RegisterStatement")

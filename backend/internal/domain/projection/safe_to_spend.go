@@ -16,6 +16,7 @@ var (
 	constrainedByFundingBalanceStatus = SafeToSpendStatus{value: "constrained_by_funding_balance"}
 	alreadyBelowReserveStatus         = SafeToSpendStatus{value: "already_below_reserve"}
 	unsupportedFundingTypeStatus      = SafeToSpendStatus{value: "unsupported_funding_type"}
+	indeterminateStatus               = SafeToSpendStatus{value: "indeterminate"}
 )
 
 func SafeStatus() SafeToSpendStatus                        { return safeStatus }
@@ -23,6 +24,7 @@ func ConstrainedByFutureCashFlowStatus() SafeToSpendStatus { return constrainedB
 func ConstrainedByFundingBalanceStatus() SafeToSpendStatus { return constrainedByFundingBalanceStatus }
 func AlreadyBelowReserveStatus() SafeToSpendStatus         { return alreadyBelowReserveStatus }
 func UnsupportedFundingTypeStatus() SafeToSpendStatus      { return unsupportedFundingTypeStatus }
+func IndeterminateStatus() SafeToSpendStatus               { return indeterminateStatus }
 func (s SafeToSpendStatus) String() string                 { return s.value }
 
 type SafeToSpendResult struct {
@@ -43,6 +45,7 @@ type SafeToSpendResult struct {
 	PolicyID               string
 	PolicyVersion          int64
 	BaselineProjection     Result
+	IndeterminateReason    string
 }
 
 func CalculateSafeToSpend(baseline Result, fundingAccount account.Account, fundingBalance money.Balance) (SafeToSpendResult, error) {
@@ -65,6 +68,13 @@ func CalculateSafeToSpend(baseline Result, fundingAccount account.Account, fundi
 	}
 	if fundingAccount.Type() != account.Cash() && fundingAccount.Type() != account.Bank() {
 		result.Status = UnsupportedFundingTypeStatus()
+		return result, nil
+	}
+	if baseline.Completeness == ProjectionIndeterminate {
+		result.Status = IndeterminateStatus()
+		if len(baseline.Issues) > 0 {
+			result.IndeterminateReason = baseline.Issues[0].Code
+		}
 		return result, nil
 	}
 

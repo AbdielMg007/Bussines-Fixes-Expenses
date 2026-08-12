@@ -225,6 +225,24 @@ func AssembleAndCalculate(state BaselineState) (domainprojection.Result, error) 
 		}
 		events = append(events, event)
 	}
+	for _, flow := range state.CardFlows {
+		if flow.OwnerID() != state.Policy.OwnerID() || !flow.SourceKind().IsCreditCardPaymentIntent() ||
+			flow.Amount().Currency() != state.Policy.Currency() || !flow.Status().IsScheduled() {
+			return domainprojection.Result{}, domainprojection.ErrInvalidProjectionEvent
+		}
+		if !withinFutureRange(flow.FinancialDate(), state.AsOf, state.HorizonEnd) {
+			continue
+		}
+		event, err := domainprojection.NewEvent(
+			"credit_card_payment_intent:"+flow.ID(), domainprojection.CreditCardPaymentIntentSource(), flow.SourceID(),
+			flow.FinancialDate(), flow.Amount(), schedule.Outflow(), schedule.ExactAmount(), schedule.ExactDate(),
+			domainprojection.AuthoritativeCardPaymentIntent(), nil, "",
+		)
+		if err != nil {
+			return domainprojection.Result{}, err
+		}
+		events = append(events, event)
+	}
 
 	for _, receivable := range state.Receivables {
 		if receivable.OwnerID() != state.Policy.OwnerID() || receivable.OriginalAmount().Currency() != state.Policy.Currency() {
@@ -268,8 +286,16 @@ func AssembleAndCalculate(state BaselineState) (domainprojection.Result, error) 
 
 	return domainprojection.Calculate(domainprojection.Input{
 		Policy: state.Policy, AsOf: state.AsOf, HorizonEnd: state.HorizonEnd,
-		SelectedAccountIDs: selectedIDs, OpeningBalance: opening, Events: events, Exclusions: exclusions,
+		SelectedAccountIDs: selectedIDs, OpeningBalance: opening, Events: events, Exclusions: exclusions, Issues: mapCardIssues(state.CardIssues),
 	})
+}
+
+func mapCardIssues(issues []CardPaymentIssue) []domainprojection.Issue {
+	result := make([]domainprojection.Issue, 0, len(issues))
+	for _, issue := range issues {
+		result = append(result, domainprojection.Issue{Code: issue.Code, CycleID: issue.CycleID, PaymentIntentID: issue.PaymentIntentID})
+	}
+	return result
 }
 
 func manualInclusionBasis(flow schedule.ScheduledCashFlow, policy domainprojection.InflowPolicy) domainprojection.InclusionBasis {

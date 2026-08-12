@@ -13,15 +13,17 @@ import (
 type EventSourceKind struct{ value string }
 
 var (
-	obligationOccurrenceSource = EventSourceKind{value: "obligation_occurrence"}
-	manualScheduledFlowSource  = EventSourceKind{value: "manual_scheduled_flow"}
-	receivableEventSource      = EventSourceKind{value: "receivable"}
+	obligationOccurrenceSource    = EventSourceKind{value: "obligation_occurrence"}
+	manualScheduledFlowSource     = EventSourceKind{value: "manual_scheduled_flow"}
+	receivableEventSource         = EventSourceKind{value: "receivable"}
+	creditCardPaymentIntentSource = EventSourceKind{value: "credit_card_payment_intent"}
 )
 
-func ObligationOccurrenceSource() EventSourceKind { return obligationOccurrenceSource }
-func ManualScheduledFlowSource() EventSourceKind  { return manualScheduledFlowSource }
-func ReceivableSource() EventSourceKind           { return receivableEventSource }
-func (s EventSourceKind) String() string          { return s.value }
+func ObligationOccurrenceSource() EventSourceKind    { return obligationOccurrenceSource }
+func ManualScheduledFlowSource() EventSourceKind     { return manualScheduledFlowSource }
+func ReceivableSource() EventSourceKind              { return receivableEventSource }
+func CreditCardPaymentIntentSource() EventSourceKind { return creditCardPaymentIntentSource }
+func (s EventSourceKind) String() string             { return s.value }
 
 func eventSourceRank(source EventSourceKind) int {
 	switch source {
@@ -31,6 +33,8 @@ func eventSourceRank(source EventSourceKind) int {
 		return 1
 	case receivableEventSource:
 		return 2
+	case creditCardPaymentIntentSource:
+		return 3
 	default:
 		return 3
 	}
@@ -44,6 +48,8 @@ func ParseEventSourceKind(value string) (EventSourceKind, error) {
 		return manualScheduledFlowSource, nil
 	case receivableEventSource.value:
 		return receivableEventSource, nil
+	case creditCardPaymentIntentSource.value:
+		return creditCardPaymentIntentSource, nil
 	default:
 		return EventSourceKind{}, ErrInvalidProjectionEvent
 	}
@@ -69,6 +75,7 @@ var (
 	expectedManualInflowAllowedByPolicy = InclusionBasis{value: "expected_manual_inflow_allowed_by_policy"}
 	confirmedReceivable                 = InclusionBasis{value: "confirmed_receivable"}
 	expectedReceivableAllowedByPolicy   = InclusionBasis{value: "expected_receivable_allowed_by_policy"}
+	authoritativeCardPaymentIntent      = InclusionBasis{value: "authoritative_card_payment_intent"}
 )
 
 func MandatoryObligationOutflow() InclusionBasis { return mandatoryObligationOutflow }
@@ -81,7 +88,8 @@ func ConfirmedReceivable() InclusionBasis { return confirmedReceivable }
 func ExpectedReceivableAllowedByPolicy() InclusionBasis {
 	return expectedReceivableAllowedByPolicy
 }
-func (b InclusionBasis) String() string { return b.value }
+func AuthoritativeCardPaymentIntent() InclusionBasis { return authoritativeCardPaymentIntent }
+func (b InclusionBasis) String() string              { return b.value }
 
 func ParseInclusionBasis(value string) (InclusionBasis, error) {
 	switch value {
@@ -97,6 +105,8 @@ func ParseInclusionBasis(value string) (InclusionBasis, error) {
 		return confirmedReceivable, nil
 	case expectedReceivableAllowedByPolicy.value:
 		return expectedReceivableAllowedByPolicy, nil
+	case authoritativeCardPaymentIntent.value:
+		return authoritativeCardPaymentIntent, nil
 	default:
 		return InclusionBasis{}, ErrInvalidProjectionEvent
 	}
@@ -204,6 +214,10 @@ func validateEventInclusion(
 			(*certainty == schedule.Expected() && basis != expectedReceivableAllowedByPolicy) {
 			return ErrInvalidProjectionEvent
 		}
+	case creditCardPaymentIntentSource:
+		if direction != schedule.Outflow() || basis != authoritativeCardPaymentIntent || certainty != nil || amountProvenance != schedule.ExactAmount() || dateProvenance != schedule.ExactDate() {
+			return ErrInvalidProjectionEvent
+		}
 	default:
 		return ErrInvalidProjectionEvent
 	}
@@ -270,7 +284,17 @@ type Input struct {
 	OpeningBalance     money.Balance
 	Events             []Event
 	Exclusions         []Exclusion
+	Issues             []Issue
 }
+
+type Completeness string
+
+const (
+	ProjectionComplete      Completeness = "complete"
+	ProjectionIndeterminate Completeness = "indeterminate"
+)
+
+type Issue struct{ Code, CycleID, PaymentIntentID string }
 
 type Result struct {
 	AsOf               financialdate.Date
@@ -287,6 +311,8 @@ type Result struct {
 	MinimumEventID     string
 	MinimumDate        *financialdate.Date
 	Exclusions         []Exclusion
+	Completeness       Completeness
+	Issues             []Issue
 }
 
 func Calculate(input Input) (Result, error) {
@@ -356,6 +382,20 @@ func Calculate(input Input) (Result, error) {
 		}
 		return exclusions[i].SourceID < exclusions[j].SourceID
 	})
+	issues := append([]Issue(nil), input.Issues...)
+	sort.Slice(issues, func(i, j int) bool {
+		if issues[i].Code != issues[j].Code {
+			return issues[i].Code < issues[j].Code
+		}
+		if issues[i].CycleID != issues[j].CycleID {
+			return issues[i].CycleID < issues[j].CycleID
+		}
+		return issues[i].PaymentIntentID < issues[j].PaymentIntentID
+	})
+	completeness := ProjectionComplete
+	if len(issues) > 0 {
+		completeness = ProjectionIndeterminate
+	}
 
 	current := input.OpeningBalance
 	minimum := current
@@ -394,7 +434,7 @@ func Calculate(input Input) (Result, error) {
 		PolicyID: input.Policy.ID(), PolicyVersion: input.Policy.Version(), Reserve: input.Policy.Reserve(),
 		SelectedAccountIDs: selectedIDs, OpeningBalance: input.OpeningBalance, Events: applied,
 		ClosingBalance: current, MinimumBalance: minimum, MinimumEventID: minimumEventID,
-		MinimumDate: minimumDate, Exclusions: exclusions,
+		MinimumDate: minimumDate, Exclusions: exclusions, Completeness: completeness, Issues: issues,
 	}, nil
 }
 

@@ -79,18 +79,21 @@ func ParseDirection(value string) (Direction, error) {
 type SourceKind struct{ value string }
 
 var (
-	obligationSource           = SourceKind{value: "obligation"}
-	receivableSource           = SourceKind{value: "receivable"}
-	manualExpectedIncomeSource = SourceKind{value: "manual_expected_income"}
-	manualOtherSource          = SourceKind{value: "manual_other"}
+	obligationSource              = SourceKind{value: "obligation"}
+	receivableSource              = SourceKind{value: "receivable"}
+	manualExpectedIncomeSource    = SourceKind{value: "manual_expected_income"}
+	manualOtherSource             = SourceKind{value: "manual_other"}
+	creditCardPaymentIntentSource = SourceKind{value: "credit_card_payment_intent"}
 )
 
-func ObligationSource() SourceKind           { return obligationSource }
-func ReceivableSource() SourceKind           { return receivableSource }
-func ManualExpectedIncomeSource() SourceKind { return manualExpectedIncomeSource }
-func ManualOtherSource() SourceKind          { return manualOtherSource }
-func (s SourceKind) String() string          { return s.value }
-func (s SourceKind) IsManual() bool          { return s == manualExpectedIncomeSource || s == manualOtherSource }
+func ObligationSource() SourceKind                   { return obligationSource }
+func ReceivableSource() SourceKind                   { return receivableSource }
+func ManualExpectedIncomeSource() SourceKind         { return manualExpectedIncomeSource }
+func ManualOtherSource() SourceKind                  { return manualOtherSource }
+func CreditCardPaymentIntentSource() SourceKind      { return creditCardPaymentIntentSource }
+func (s SourceKind) String() string                  { return s.value }
+func (s SourceKind) IsManual() bool                  { return s == manualExpectedIncomeSource || s == manualOtherSource }
+func (s SourceKind) IsCreditCardPaymentIntent() bool { return s == creditCardPaymentIntentSource }
 
 func ParseSourceKind(value string) (SourceKind, error) {
 	switch value {
@@ -102,6 +105,8 @@ func ParseSourceKind(value string) (SourceKind, error) {
 		return manualExpectedIncomeSource, nil
 	case manualOtherSource.value:
 		return manualOtherSource, nil
+	case creditCardPaymentIntentSource.value:
+		return creditCardPaymentIntentSource, nil
 	default:
 		return SourceKind{}, ErrInvalidSourceKind
 	}

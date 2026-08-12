@@ -34,6 +34,19 @@ type InstallmentPrincipalPaymentResult struct {
 	Payment domain.InstallmentPrincipalPayment
 	Summary InstallmentPlanSummary
 }
+type PaymentIntentSettlement struct {
+	ID, OwnerID, AccountID, CycleID, IntentID, TransferID string
+	Amount                                                money.Money
+	CreatedAt                                             time.Time
+}
+type PaymentIntentSettlementInput struct {
+	IntentID, TransferID string
+	Mutation             ledger.MutationIdentity
+}
+type PaymentIntentSettlementResult struct {
+	Settlement PaymentIntentSettlement
+	Intent     domain.PaymentIntent
+}
 type InstallmentPlanSummary struct {
 	Plan                 domain.InstallmentPlan
 	PaidPrincipal        money.Money
@@ -46,6 +59,7 @@ type Repository interface {
 	GetIntent(context.Context, string, string) (domain.PaymentIntent, error)
 	ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date, string, time.Time) (domain.PaymentIntent, error)
 	CancelIntent(context.Context, string, string, time.Time) (domain.PaymentIntent, error)
+	SettleIntent(context.Context, string, PaymentIntentSettlementInput, string, time.Time) (PaymentIntentSettlementResult, error)
 	CreateInstallmentPlan(context.Context, string, InstallmentPlanInput, string, time.Time) (domain.InstallmentPlan, error)
 	GetInstallmentPlan(context.Context, string, string) (domain.InstallmentPlan, error)
 	ListInstallmentPlans(context.Context, string, string) ([]domain.InstallmentPlan, error)
@@ -96,6 +110,16 @@ func (s *Service) ReplaceIntent(ctx context.Context, owner, cycle string, amount
 }
 func (s *Service) CancelIntent(ctx context.Context, owner, cycle string) (domain.PaymentIntent, error) {
 	return s.repo.CancelIntent(ctx, owner, cycle, s.now().UTC())
+}
+func (s *Service) SettleIntent(ctx context.Context, owner string, in PaymentIntentSettlementInput) (PaymentIntentSettlementResult, error) {
+	if owner == "" || in.IntentID == "" || in.TransferID == "" {
+		return PaymentIntentSettlementResult{}, domain.ErrInvalidPaymentIntentSettlement
+	}
+	id, err := s.id()
+	if err != nil {
+		return PaymentIntentSettlementResult{}, err
+	}
+	return s.repo.SettleIntent(ctx, owner, in, id, s.now().UTC())
 }
 func (s *Service) CreateInstallmentPlan(ctx context.Context, owner string, in InstallmentPlanInput) (domain.InstallmentPlan, error) {
 	if owner == "" {

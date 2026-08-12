@@ -75,6 +75,11 @@ type projectionExclusionResponse struct {
 	Reasons    []string `json:"reasons"`
 	Label      string   `json:"label,omitempty"`
 }
+type projectionIssueResponse struct {
+	Code            string `json:"code"`
+	CycleID         string `json:"cycle_id"`
+	PaymentIntentID string `json:"payment_intent_id,omitempty"`
+}
 
 type projectionResponse struct {
 	AsOf                string                        `json:"as_of"`
@@ -91,6 +96,8 @@ type projectionResponse struct {
 	MinimumEventID      string                        `json:"minimum_event_id,omitempty"`
 	MinimumDate         *string                       `json:"minimum_date,omitempty"`
 	Exclusions          []projectionExclusionResponse `json:"exclusions"`
+	Completeness        string                        `json:"completeness"`
+	Issues              []projectionIssueResponse     `json:"issues"`
 }
 
 type safeToSpendResponse struct {
@@ -111,6 +118,7 @@ type safeToSpendResponse struct {
 	PolicyID                    string             `json:"policy_id"`
 	PolicyVersion               int64              `json:"policy_version"`
 	BaselineProjection          projectionResponse `json:"baseline_projection"`
+	IndeterminateReason         string             `json:"indeterminate_reason,omitempty"`
 }
 
 func (h projectionHandler) getPolicy(w http.ResponseWriter, r *http.Request) {
@@ -262,7 +270,8 @@ func mapProjection(result domainprojection.Result) projectionResponse {
 		SelectedAccountIDs: append([]string(nil), result.SelectedAccountIDs...), OpeningBalanceMinor: result.OpeningBalance.MinorUnits(),
 		Events: make([]projectionEventResponse, 0, len(result.Events)), ClosingBalanceMinor: result.ClosingBalance.MinorUnits(),
 		MinimumBalanceMinor: result.MinimumBalance.MinorUnits(), MinimumEventID: result.MinimumEventID,
-		Exclusions: make([]projectionExclusionResponse, 0, len(result.Exclusions)),
+		Exclusions: make([]projectionExclusionResponse, 0, len(result.Exclusions)), Completeness: string(result.Completeness),
+		Issues: make([]projectionIssueResponse, 0, len(result.Issues)),
 	}
 	if result.MinimumDate != nil {
 		value := result.MinimumDate.String()
@@ -292,6 +301,9 @@ func mapProjection(result domainprojection.Result) projectionResponse {
 			SourceKind: exclusion.SourceKind.String(), SourceID: exclusion.SourceID, Reasons: reasons, Label: exclusion.Label,
 		})
 	}
+	for _, issue := range result.Issues {
+		response.Issues = append(response.Issues, projectionIssueResponse{Code: issue.Code, CycleID: issue.CycleID, PaymentIntentID: issue.PaymentIntentID})
+	}
 	return response
 }
 
@@ -302,7 +314,7 @@ func mapSafeToSpend(result domainprojection.SafeToSpendResult) safeToSpendRespon
 		OpeningLiquidBalanceMinor: result.OpeningLiquidBalance.MinorUnits(), BaselineMinimumBalanceMinor: result.BaselineMinimumBalance.MinorUnits(),
 		SafeToSpendMinor: result.SafeToSpend.MinorUnits(), Status: result.Status.String(), LimitingEventID: result.LimitingEventID,
 		EarliestBreachEventID: result.EarliestBreachEventID, DeficitMinor: result.Deficit.MinorUnits(),
-		PolicyID: result.PolicyID, PolicyVersion: result.PolicyVersion, BaselineProjection: mapProjection(result.BaselineProjection),
+		PolicyID: result.PolicyID, PolicyVersion: result.PolicyVersion, BaselineProjection: mapProjection(result.BaselineProjection), IndeterminateReason: result.IndeterminateReason,
 	}
 	if result.LimitingDate != nil {
 		value := result.LimitingDate.String()

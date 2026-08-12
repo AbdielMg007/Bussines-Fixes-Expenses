@@ -15,6 +15,8 @@ var (
 	ErrIssuedCannotBeReplacedByEstimate = errors.New("issued statement cannot be replaced by estimate")
 	ErrInvalidPaymentIntent             = errors.New("invalid payment intent")
 	ErrPaymentIntentCancelled           = errors.New("cancelled payment intent cannot be replaced")
+	ErrPaymentIntentSettled             = errors.New("settled payment intent cannot be replaced")
+	ErrInvalidPaymentIntentSettlement   = errors.New("invalid payment intent settlement")
 	ErrNoAuthoritativeStatement         = errors.New("no authoritative statement")
 	ErrInvalidInstallmentPlan           = errors.New("invalid installment plan")
 	ErrInvalidInstallmentAllocation     = errors.New("invalid installment allocation")
@@ -37,6 +39,7 @@ const (
 	IntentActive      IntentStatus = "active"
 	IntentNeedsReview IntentStatus = "needs_review"
 	IntentCancelled   IntentStatus = "cancelled"
+	IntentSettled     IntentStatus = "settled"
 )
 
 type Cycle struct {
@@ -95,7 +98,7 @@ type PaymentIntent struct {
 }
 
 func NewPaymentIntent(id, owner, account, cycle string, amount money.Money, planned financialdate.Date, status IntentStatus, version int64, created, updated time.Time) (PaymentIntent, error) {
-	if strings.TrimSpace(id) == "" || strings.TrimSpace(owner) == "" || strings.TrimSpace(account) == "" || strings.TrimSpace(cycle) == "" || amount.MinorUnits() <= 0 || planned.String() == "" || version < 1 || created.IsZero() || updated.Before(created) || (status != IntentActive && status != IntentNeedsReview && status != IntentCancelled) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(owner) == "" || strings.TrimSpace(account) == "" || strings.TrimSpace(cycle) == "" || amount.MinorUnits() <= 0 || planned.String() == "" || version < 1 || created.IsZero() || updated.Before(created) || (status != IntentActive && status != IntentNeedsReview && status != IntentCancelled && status != IntentSettled) {
 		return PaymentIntent{}, ErrInvalidPaymentIntent
 	}
 	return PaymentIntent{id, owner, account, cycle, amount, planned, status, version, created.UTC(), updated.UTC()}, nil

@@ -10,6 +10,7 @@ import (
 	domain "runway/backend/internal/domain/card"
 	"runway/backend/internal/domain/financialdate"
 	"runway/backend/internal/domain/money"
+	"strconv"
 	"time"
 )
 
@@ -99,9 +100,18 @@ func (r *CardRepository) RegisterStatement(ctx context.Context, owner string, in
 	if e != nil {
 		return domain.Statement{}, e
 	}
-	_, e = tx.Exec(ctx, `UPDATE credit_card_payment_intents SET status='needs_review',updated_at=$1 WHERE cycle_id=$2 AND status='active' AND (amount_minor>$3 OR planned_date>$4::date)`, now, cycleID, s.Balance.MinorUnits(), s.Due.String())
+	var invalidatedID string
+	e = tx.QueryRow(ctx, `UPDATE credit_card_payment_intents SET status='needs_review',updated_at=$1 WHERE cycle_id=$2 AND status='active' AND (amount_minor>$3 OR planned_date>$4::date) RETURNING id`, now, cycleID, s.Balance.MinorUnits(), s.Due.String()).Scan(&invalidatedID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		e = nil
+	}
 	if e != nil {
 		return domain.Statement{}, e
+	}
+	if invalidatedID != "" {
+		if e = cancelActiveCardFlow(ctx, tx, owner, invalidatedID, now); e != nil {
+			return domain.Statement{}, e
+		}
 	}
 	if e = tx.Commit(ctx); e != nil {
 		return domain.Statement{}, e
@@ -162,6 +172,9 @@ func (r *CardRepository) ReplaceIntent(ctx context.Context, owner, cycle string,
 		if e != nil {
 			return x, e
 		}
+		if e = createCardFlow(ctx, tx, x, x.Amount.MinorUnits(), now); e != nil {
+			return x, e
+		}
 		e = tx.Commit(ctx)
 		return x, e
 	}
@@ -170,6 +183,9 @@ func (r *CardRepository) ReplaceIntent(ctx context.Context, owner, cycle string,
 	}
 	if old.Status == domain.IntentCancelled {
 		return domain.PaymentIntent{}, domain.ErrPaymentIntentCancelled
+	}
+	if old.Status == domain.IntentSettled {
+		return domain.PaymentIntent{}, domain.ErrPaymentIntentSettled
 	}
 	same := old.Amount.MinorUnits() == amount.MinorUnits() && old.Planned.String() == date.String() && old.Status == domain.IntentActive
 	if same {
@@ -183,6 +199,12 @@ func (r *CardRepository) ReplaceIntent(ctx context.Context, owner, cycle string,
 	}
 	x, e := domain.NewPaymentIntent(old.ID, owner, aid, cycle, amount, date, domain.IntentActive, v, old.CreatedAt, now)
 	if e != nil {
+		return x, e
+	}
+	if e = cancelActiveCardFlow(ctx, tx, owner, old.ID, now); e != nil {
+		return x, e
+	}
+	if e = createCardFlow(ctx, tx, x, x.Amount.MinorUnits(), now); e != nil {
 		return x, e
 	}
 	e = tx.Commit(ctx)
@@ -202,9 +224,15 @@ func (r *CardRepository) CancelIntent(ctx context.Context, owner, cycle string, 
 		e = tx.Commit(ctx)
 		return old, e
 	}
+	if old.Status == domain.IntentSettled {
+		return domain.PaymentIntent{}, domain.ErrPaymentIntentSettled
+	}
 	v := old.Version + 1
 	_, e = tx.Exec(ctx, `UPDATE credit_card_payment_intents SET status='cancelled',version=$1,updated_at=$2 WHERE id=$3`, v, now, old.ID)
 	if e != nil {
+		return domain.PaymentIntent{}, e
+	}
+	if e = cancelActiveCardFlow(ctx, tx, owner, old.ID, now); e != nil {
 		return domain.PaymentIntent{}, e
 	}
 	x, e := domain.NewPaymentIntent(old.ID, old.OwnerID, old.AccountID, old.CycleID, old.Amount, old.Planned, domain.IntentCancelled, v, old.CreatedAt, now)
@@ -213,6 +241,130 @@ func (r *CardRepository) CancelIntent(ctx context.Context, owner, cycle string, 
 	}
 	e = tx.Commit(ctx)
 	return x, e
+}
+
+func (r *CardRepository) SettleIntent(ctx context.Context, owner string, in card.PaymentIntentSettlementInput, id string, now time.Time) (card.PaymentIntentSettlementResult, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	resource, replay, err := claimMutation(ctx, tx, owner, "settle_credit_card_payment_intent", in.Mutation, id, now)
+	if err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	if replay {
+		settlement, err := scanIntentSettlement(tx.QueryRow(ctx, settlementSQL+` WHERE owner_id=$1 AND id=$2`, owner, resource))
+		if err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+		intent, err := scanIntent(tx.QueryRow(ctx, intentSQL+` WHERE owner_id=$1 AND id=$2`, owner, settlement.IntentID))
+		if err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+		return card.PaymentIntentSettlementResult{Settlement: settlement, Intent: intent}, nil
+	}
+	intent, err := scanIntent(tx.QueryRow(ctx, intentSQL+` WHERE owner_id=$1 AND id=$2 FOR UPDATE`, owner, in.IntentID))
+	if err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	if intent.Status != domain.IntentActive {
+		return card.PaymentIntentSettlementResult{}, domain.ErrInvalidPaymentIntentSettlement
+	}
+	var amount int64
+	var currency, sourceTransactionID string
+	err = tx.QueryRow(ctx, `SELECT lt.amount_minor,lt.currency,src.id
+		FROM linked_transfers lt
+		JOIN financial_transactions src ON src.owner_id=lt.owner_id AND src.transfer_id=lt.id AND src.account_id=lt.source_account_id
+		JOIN accounts source_account ON source_account.owner_id=lt.owner_id AND source_account.id=lt.source_account_id
+		WHERE lt.owner_id=$1 AND lt.id=$2 AND lt.destination_account_id=$3
+		  AND src.effect='asset_outflow' AND source_account.account_type IN ('cash','bank')`, owner, in.TransferID, intent.AccountID).Scan(&amount, &currency, &sourceTransactionID)
+	if err != nil || currency != intent.Amount.Currency().Code() || amount <= 0 {
+		return card.PaymentIntentSettlementResult{}, domain.ErrInvalidPaymentIntentSettlement
+	}
+	var settledBefore int64
+	if err = tx.QueryRow(ctx, `SELECT COALESCE(SUM(amount_minor),0) FROM credit_card_payment_intent_settlements WHERE intent_id=$1`, intent.ID).Scan(&settledBefore); err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	if settledBefore > intent.Amount.MinorUnits() || amount > intent.Amount.MinorUnits()-settledBefore {
+		return card.PaymentIntentSettlementResult{}, domain.ErrInvalidPaymentIntentSettlement
+	}
+	settlement := card.PaymentIntentSettlement{ID: id, OwnerID: owner, AccountID: intent.AccountID, CycleID: intent.CycleID, IntentID: intent.ID, TransferID: in.TransferID, CreatedAt: now}
+	settlement.Amount, _ = money.New(amount, intent.Amount.Currency())
+	_, err = tx.Exec(ctx, `INSERT INTO credit_card_payment_intent_settlements(id,owner_id,account_id,cycle_id,intent_id,transfer_id,amount_minor,currency,source_transaction_id,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, settlement.ID, settlement.OwnerID, settlement.AccountID, settlement.CycleID, settlement.IntentID, settlement.TransferID, amount, currency, sourceTransactionID, now)
+	if err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	remaining := intent.Amount.MinorUnits() - settledBefore - amount
+	if remaining == 0 {
+		_, err = tx.Exec(ctx, `UPDATE scheduled_cash_flows SET status='settled',settlement_transaction_id=$1,updated_at=$2 WHERE owner_id=$3 AND source_kind='credit_card_payment_intent' AND source_id=$4 AND status='scheduled'`, sourceTransactionID, now, owner, intent.ID)
+		if err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+		_, err = tx.Exec(ctx, `UPDATE credit_card_payment_intents SET status='settled',version=version+1,updated_at=$1 WHERE id=$2`, now, intent.ID)
+		if err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+	} else {
+		if err = cancelActiveCardFlow(ctx, tx, owner, intent.ID, now); err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+		if err = createCardFlow(ctx, tx, intent, remaining, now); err != nil {
+			return card.PaymentIntentSettlementResult{}, err
+		}
+	}
+	updated, err := scanIntent(tx.QueryRow(ctx, intentSQL+` WHERE owner_id=$1 AND id=$2`, owner, intent.ID))
+	if err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return card.PaymentIntentSettlementResult{}, err
+	}
+	return card.PaymentIntentSettlementResult{Settlement: settlement, Intent: updated}, nil
+}
+
+// createCardFlow is deliberately private to the card repository. Public scheduled-flow
+// creation remains manual-only; card cash effects are derived solely from an active intent.
+func createCardFlow(ctx context.Context, tx pgx.Tx, intent domain.PaymentIntent, remaining int64, now time.Time) error {
+	if remaining <= 0 || intent.Status != domain.IntentActive {
+		return domain.ErrInvalidPaymentIntent
+	}
+	flowID := intent.ID + "-flow-" + strconv.FormatInt(intent.Version, 10) + "-" + strconv.FormatInt(remaining, 10)
+	_, err := tx.Exec(ctx, `INSERT INTO scheduled_cash_flows(id,owner_id,source_kind,source_id,amount_minor,currency,direction,financial_date,status,amount_provenance,date_provenance,inclusion_eligibility,created_at,updated_at)
+		VALUES($1,$2,'credit_card_payment_intent',$3,$4,$5,'outflow',$6::date,'scheduled','exact','exact','eligible',$7,$7)`,
+		flowID, intent.OwnerID, intent.ID, remaining, intent.Amount.Currency().Code(), intent.Planned.String(), now)
+	return err
+}
+
+const settlementSQL = `SELECT id,owner_id,account_id,cycle_id,intent_id,transfer_id,amount_minor,currency,created_at FROM credit_card_payment_intent_settlements`
+
+func scanIntentSettlement(r row) (card.PaymentIntentSettlement, error) {
+	var x card.PaymentIntentSettlement
+	var amount int64
+	var currency string
+	err := r.Scan(&x.ID, &x.OwnerID, &x.AccountID, &x.CycleID, &x.IntentID, &x.TransferID, &amount, &currency, &x.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return x, card.ErrNotFound
+	}
+	if err != nil {
+		return x, err
+	}
+	c, err := money.ParseCurrency(currency)
+	if err != nil {
+		return x, err
+	}
+	x.Amount, err = money.New(amount, c)
+	return x, err
+}
+
+func cancelActiveCardFlow(ctx context.Context, tx pgx.Tx, owner, intentID string, now time.Time) error {
+	_, err := tx.Exec(ctx, `UPDATE scheduled_cash_flows SET status='cancelled',updated_at=$1
+		WHERE owner_id=$2 AND source_kind='credit_card_payment_intent' AND source_id=$3 AND status='scheduled'`, now, owner, intentID)
+	return err
 }
 
 const statementSQL = `SELECT id,owner_id,account_id,cycle_id,revision,authority,statement_balance_minor,currency,minimum_payment_minor,payment_to_avoid_interest_minor,due_date::text,created_at,superseded_at,superseded_by_id FROM credit_card_statements`

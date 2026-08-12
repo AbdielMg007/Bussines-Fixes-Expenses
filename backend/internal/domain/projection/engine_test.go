@@ -77,6 +77,27 @@ func TestCalculateMinimumIncludesOpeningAndEarliestEqualLow(t *testing.T) {
 	}
 }
 
+func TestCardPaymentIntentIsOneExactOutflowAndIssuesMakeProjectionIndeterminate(t *testing.T) {
+	policy := testPolicy(t, 30)
+	asOf := testDate(t, "2026-08-10")
+	end, _ := asOf.AddDays(30)
+	date := testDate(t, "2026-08-15")
+	amount, _ := money.New(280_000, money.MXN())
+	event, err := NewEvent("credit_card_payment_intent:flow", CreditCardPaymentIntentSource(), "intent", date, amount, schedule.Outflow(), schedule.ExactAmount(), schedule.ExactDate(), AuthoritativeCardPaymentIntent(), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opening, _ := money.NewBalance(1_000_000, money.MXN())
+	result, err := Calculate(Input{Policy: policy, AsOf: asOf, HorizonEnd: end, OpeningBalance: opening, Events: []Event{event}})
+	if err != nil || len(result.Events) != 1 || result.Events[0].BalanceAfter.MinorUnits() != 720_000 || result.Completeness != ProjectionComplete {
+		t.Fatalf("card flow result=%+v err=%v", result, err)
+	}
+	result, err = Calculate(Input{Policy: policy, AsOf: asOf, HorizonEnd: end, OpeningBalance: opening, Events: []Event{event}, Issues: []Issue{{Code: "card_payment_intent_needs_review", CycleID: "cycle", PaymentIntentID: "intent"}}})
+	if err != nil || result.Completeness != ProjectionIndeterminate || len(result.Issues) != 1 {
+		t.Fatalf("indeterminate result=%+v err=%v", result, err)
+	}
+}
+
 func TestCalculateHorizonIntervalAndSupportedDateOverflow(t *testing.T) {
 	asOf := testDate(t, "2026-08-10")
 	end := testDate(t, "2026-08-11")

@@ -28,6 +28,7 @@ func TestMigrationsApplyCleanlyAndIdempotently(t *testing.T) {
 		"financial_transactions", "balance_snapshots", "financial_mutations", "obligations",
 		"scheduled_cash_flows", "receivables", "receivable_collections", "projection_policies",
 		"projection_policy_accounts", "credit_card_cycles", "credit_card_statements", "credit_card_payment_intents",
+		"credit_card_payment_intent_settlements",
 		"credit_card_installment_plans", "credit_card_installment_allocations", "credit_card_installment_principal_payments",
 	} {
 		var exists bool
@@ -42,8 +43,8 @@ func TestMigrationsApplyCleanlyAndIdempotently(t *testing.T) {
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&migrationCount); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if migrationCount != 12 {
-		t.Fatalf("migration count = %d, want 12", migrationCount)
+	if migrationCount != 15 {
+		t.Fatalf("migration count = %d, want 15", migrationCount)
 	}
 }
 

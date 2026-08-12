@@ -46,6 +46,19 @@ func TestSafeToSpendFutureCashFlowAndBaselineBreach(t *testing.T) {
 	}
 }
 
+func TestSafeToSpendIsIndeterminateForUnresolvedCardPayment(t *testing.T) {
+	asOf := testDate(t, "2026-08-10")
+	opening, _ := money.NewBalance(1_000_000, money.MXN())
+	baseline := safeBaseline(t, asOf, 30, 100_000, opening, nil)
+	baseline.Completeness = ProjectionIndeterminate
+	baseline.Issues = []Issue{{Code: "card_payment_intent_needs_review", CycleID: "cycle", PaymentIntentID: "intent"}}
+	funding, _ := money.NewBalance(1_000_000, money.MXN())
+	result, err := CalculateSafeToSpend(baseline, safeFundingAccount(t, "bank", account.Bank()), funding)
+	if err != nil || result.Status != IndeterminateStatus() || result.SafeToSpend.MinorUnits() != 0 || result.IndeterminateReason != "card_payment_intent_needs_review" {
+		t.Fatalf("indeterminate safe-to-spend = %+v, %v", result, err)
+	}
+}
+
 func TestSafeToSpendFundingCapOpeningBreachAndNoEvents(t *testing.T) {
 	asOf := testDate(t, "2026-08-10")
 	bank := safeFundingAccount(t, "bank", account.Bank())

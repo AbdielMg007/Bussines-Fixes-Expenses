@@ -52,6 +52,9 @@ func (f *fakeRepository) ReplaceIntent(context.Context, string, string, money.Mo
 func (f *fakeRepository) CancelIntent(context.Context, string, string, time.Time) (domain.PaymentIntent, error) {
 	return domain.PaymentIntent{}, nil
 }
+func (f *fakeRepository) SettleIntent(context.Context, string, PaymentIntentSettlementInput, string, time.Time) (PaymentIntentSettlementResult, error) {
+	return PaymentIntentSettlementResult{}, nil
+}
 func (f *fakeRepository) CreateInstallmentPlan(context.Context, string, InstallmentPlanInput, string, time.Time) (domain.InstallmentPlan, error) {
 	return domain.InstallmentPlan{}, nil
 }

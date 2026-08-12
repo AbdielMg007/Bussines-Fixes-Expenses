@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"runway/backend/internal/domain/account"
+	domaincard "runway/backend/internal/domain/card"
 	"runway/backend/internal/domain/financialdate"
 	domainledger "runway/backend/internal/domain/ledger"
 	"runway/backend/internal/domain/money"
@@ -19,6 +20,50 @@ import (
 	applicationprojection "runway/backend/internal/projection"
 	applicationschedule "runway/backend/internal/schedule"
 )
+
+func TestCardPaymentIssuesTreatPastAndTodayActiveFlowsAsIndeterminate(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ledgerService, _ := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	cardAccount := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	cards := NewCardRepository(pool)
+	statement, err := cards.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", cardAccount.ID(), domaincard.Issued, 280_000, "2026-09-09", "statement"), "statement", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, _ := money.New(280_000, money.MXN())
+	past := cardTestDate(t, "2026-08-01")
+	if _, err = cards.ReplaceIntent(ctx, "owner", statement.CycleID, amount, past, "intent", now); err != nil {
+		t.Fatal(err)
+	}
+	asOf := cardTestDate(t, "2026-08-10")
+	end := cardTestDate(t, "2026-09-09")
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues, err := loadCardPaymentIssues(ctx, tx, "owner", asOf, end)
+	_ = tx.Rollback(ctx)
+	if err != nil || len(issues) != 1 || issues[0].Code != "card_payment_past_due_unsettled" {
+		t.Fatalf("past issues=%+v err=%v", issues, err)
+	}
+	// A valid replacement planned today is also unresolved because Issue 7 excludes same-day events.
+	today := cardTestDate(t, "2026-08-10")
+	if _, err = cards.ReplaceIntent(ctx, "owner", statement.CycleID, amount, today, "replace", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues, err = loadCardPaymentIssues(ctx, tx, "owner", asOf, end)
+	_ = tx.Rollback(ctx)
+	if err != nil || len(issues) != 1 || issues[0].Code != "card_payment_due_today_unsettled" {
+		t.Fatalf("today issues=%+v err=%v", issues, err)
+	}
+}
 
 func TestProjectionRepositoryPolicySelectionPersistenceAndOwnerIsolation(t *testing.T) {
 	pool := newIsolatedTestDatabase(t)

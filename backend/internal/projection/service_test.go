@@ -80,6 +80,37 @@ func TestAssembleBaselineUsesLedgerTruthAndInclusionRules(t *testing.T) {
 	}
 }
 
+func TestAssembleIgnoresHistoricalCardFlowsAndPreservesCardIndeterminacy(t *testing.T) {
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	policy := applicationTestPolicy(t, domainprojection.ConfirmedInflowsOnly(), domainprojection.AllActiveLiquidSelection(), nil)
+	asOf := applicationDate(t, "2026-08-10")
+	end, _ := asOf.AddDays(policy.HorizonDays())
+	bank := applicationAccount(t, "bank", account.Bank(), account.ActiveStatus(), now)
+	opening, _ := money.NewBalance(1_000_000, money.MXN())
+	amount, _ := money.New(280_000, money.MXN())
+	date := applicationDate(t, "2026-09-09")
+	cancelled, err := schedule.RestoreScheduledCashFlow("cancelled-card-flow", "owner", schedule.CreditCardPaymentIntentSource(), "intent", amount, schedule.Outflow(), date, schedule.CancelledFlow(), schedule.ExactAmount(), schedule.ExactDate(), schedule.EligibleForPolicy(), "", now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := AssembleAndCalculate(BaselineState{Policy: policy, AsOf: asOf, HorizonEnd: end, Accounts: []AccountBalance{{Account: bank, State: stateWithSnapshot(t, bank, opening, now)}}, CardFlows: nil, CardIssues: []CardPaymentIssue{{Code: "card_payment_intent_needs_review", CycleID: "cycle", PaymentIntentID: "intent"}}})
+	if err != nil || result.Completeness != domainprojection.ProjectionIndeterminate || len(result.Events) != 0 {
+		t.Fatalf("needs-review projection=%+v err=%v", result, err)
+	}
+	// The repository filter is what keeps this persisted historical flow out of CardFlows.
+	if !cancelled.Status().IsCancelled() {
+		t.Fatal("test fixture is not cancelled")
+	}
+	settled, err := schedule.RestoreScheduledCashFlow("settled-card-flow", "owner", schedule.CreditCardPaymentIntentSource(), "intent", amount, schedule.Outflow(), date, schedule.SettledFlow(), schedule.ExactAmount(), schedule.ExactDate(), schedule.EligibleForPolicy(), "posted-source", now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = AssembleAndCalculate(BaselineState{Policy: policy, AsOf: asOf, HorizonEnd: end, Accounts: []AccountBalance{{Account: bank, State: stateWithSnapshot(t, bank, opening, now)}}})
+	if err != nil || result.Completeness != domainprojection.ProjectionComplete || len(result.Events) != 0 || !settled.Status().IsSettled() {
+		t.Fatalf("settled projection=%+v err=%v", result, err)
+	}
+}
+
 func TestReceivableCertaintyProvenanceAndInclusionBasisRemainIndependent(t *testing.T) {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	policy := applicationTestPolicy(t, domainprojection.IncludeExpectedInflows(), domainprojection.ExplicitSelection(), nil)

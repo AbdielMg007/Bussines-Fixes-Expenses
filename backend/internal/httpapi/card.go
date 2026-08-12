@@ -21,6 +21,7 @@ type CardService interface {
 	GetIntent(context.Context, string, string) (domain.PaymentIntent, error)
 	ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date) (domain.PaymentIntent, error)
 	CancelIntent(context.Context, string, string) (domain.PaymentIntent, error)
+	SettleIntent(context.Context, string, app.PaymentIntentSettlementInput) (app.PaymentIntentSettlementResult, error)
 	CreateInstallmentPlan(context.Context, string, app.InstallmentPlanInput) (domain.InstallmentPlan, error)
 	GetInstallmentPlan(context.Context, string, string) (domain.InstallmentPlan, error)
 	ListInstallmentPlans(context.Context, string, string) ([]domain.InstallmentPlan, error)
@@ -60,6 +61,9 @@ type installmentPlanRequest struct {
 type installmentPrincipalPaymentRequest struct {
 	Amount   *int64 `json:"amount_minor"`
 	Currency string `json:"currency"`
+}
+type intentSettlementRequest struct {
+	TransferID string `json:"transfer_id"`
 }
 type statementResponse struct {
 	ID, AccountID, CycleID, Authority, Currency, DueDate, SupersededByID string     `json:"-"`
@@ -218,6 +222,31 @@ func (h cardHandler) cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, mapIntent(x))
+}
+func (h cardHandler) settleIntent(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, ok := parseIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request intentSettlementRequest
+	if !decodeLedgerRequest(w, r, &request) || request.TransferID == "" {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	intentID := r.PathValue("intent_id")
+	result, err := h.cards.SettleIntent(r.Context(), owner, app.PaymentIntentSettlementInput{
+		IntentID: intentID, TransferID: request.TransferID,
+		Mutation: ledger.MutationIdentity{Key: key, Fingerprint: ledger.CanonicalFingerprint("v1", "settle_credit_card_payment_intent", owner, intentID, request.TransferID)},
+	})
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"id": result.Settlement.ID, "intent": mapIntent(result.Intent)})
 }
 func (h cardHandler) createInstallmentPlan(w http.ResponseWriter, r *http.Request) {
 	owner, ok := h.mutate(w, r)
@@ -388,7 +417,7 @@ func (h cardHandler) err(w http.ResponseWriter, e error) {
 		writeError(w, 404, "resource not found")
 		return
 	}
-	if errors.Is(e, domain.ErrIssuedCannotBeReplacedByEstimate) || errors.Is(e, domain.ErrPaymentIntentCancelled) || errors.Is(e, domain.ErrInstallmentOverpayment) || errors.Is(e, domain.ErrInstallmentPlanCompleted) || errors.Is(e, app.ErrConflict) {
+	if errors.Is(e, domain.ErrIssuedCannotBeReplacedByEstimate) || errors.Is(e, domain.ErrPaymentIntentCancelled) || errors.Is(e, domain.ErrPaymentIntentSettled) || errors.Is(e, domain.ErrInstallmentOverpayment) || errors.Is(e, domain.ErrInstallmentPlanCompleted) || errors.Is(e, app.ErrConflict) {
 		writeError(w, 409, "request conflicts with current statement state")
 		return
 	}

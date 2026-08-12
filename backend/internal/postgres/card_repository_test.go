@@ -54,6 +54,10 @@ func TestCardRepositoryStatementAuthorityIdempotencyAndIntentLifecycle(t *testin
 	if err != nil || intent.Status != domaincard.IntentActive || intent.Version != 1 {
 		t.Fatalf("create intent = %+v, error = %v", intent, err)
 	}
+	var activeCardFlows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scheduled_cash_flows WHERE owner_id='owner' AND source_kind='credit_card_payment_intent' AND source_id=$1 AND status='scheduled'`, intent.ID).Scan(&activeCardFlows); err != nil || activeCardFlows != 1 {
+		t.Fatalf("active card flow count = %d, error = %v", activeCardFlows, err)
+	}
 	stable, err := repository.ReplaceIntent(ctx, "owner", estimate.CycleID, amount, planned, "ignored", now.Add(time.Minute))
 	if err != nil || stable.ID != intent.ID || stable.Version != 1 {
 		t.Fatalf("identical intent PUT = %+v, error = %v", stable, err)
@@ -78,6 +82,9 @@ func TestCardRepositoryStatementAuthorityIdempotencyAndIntentLifecycle(t *testin
 	if err != nil || needsReview.Status != domaincard.IntentNeedsReview || needsReview.Amount.MinorUnits() != 280_000 || needsReview.Planned.String() != "2026-09-09" {
 		t.Fatalf("intent after invalidating correction = %+v, error = %v", needsReview, err)
 	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scheduled_cash_flows WHERE owner_id='owner' AND source_kind='credit_card_payment_intent' AND source_id=$1 AND status='scheduled'`, intent.ID).Scan(&activeCardFlows); err != nil || activeCardFlows != 0 {
+		t.Fatalf("invalidated intent retained active card flow count = %d, error = %v", activeCardFlows, err)
+	}
 	if _, err := repository.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", creditCard.ID(), domaincard.Estimated, 100_000, "2026-09-09", "forbidden-estimate"), "forbidden-estimate", now.Add(3*time.Minute)); !errors.Is(err, domaincard.ErrIssuedCannotBeReplacedByEstimate) {
 		t.Fatalf("issued to estimate error = %v", err)
 	}
@@ -86,6 +93,10 @@ func TestCardRepositoryStatementAuthorityIdempotencyAndIntentLifecycle(t *testin
 	replaced, err := repository.ReplaceIntent(ctx, "owner", estimate.CycleID, replacementAmount, planned, "replacement", now.Add(3*time.Minute))
 	if err != nil || replaced.Status != domaincard.IntentActive || replaced.Version != 2 {
 		t.Fatalf("replace needs-review intent = %+v, error = %v", replaced, err)
+	}
+	var activeAmount int64
+	if err := pool.QueryRow(ctx, `SELECT amount_minor FROM scheduled_cash_flows WHERE owner_id='owner' AND source_kind='credit_card_payment_intent' AND source_id=$1 AND status='scheduled'`, intent.ID).Scan(&activeAmount); err != nil || activeAmount != 200_000 {
+		t.Fatalf("replacement card flow amount = %d, error = %v", activeAmount, err)
 	}
 	cancelled, err := repository.CancelIntent(ctx, "owner", estimate.CycleID, now.Add(4*time.Minute))
 	if err != nil || cancelled.Status != domaincard.IntentCancelled || cancelled.Version != 3 {
@@ -109,6 +120,77 @@ func TestCardRepositoryStatementAuthorityIdempotencyAndIntentLifecycle(t *testin
 	var activeCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM credit_card_statements WHERE cycle_id=$1 AND superseded_at IS NULL`, estimate.CycleID).Scan(&activeCount); err != nil || activeCount != 1 {
 		t.Fatalf("active statement count = %d, error = %v", activeCount, err)
+	}
+}
+
+func TestCardSettlementDatabaseRejectsRawOverpaymentAndInconsistentLifecycle(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ledgerService, err := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bank := createTestAccount(t, ledgerService, "owner", "Bank", account.Bank())
+	cardAccount := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	date := cardTestDate(t, "2026-08-10")
+	charge, _ := money.New(280_000, money.MXN())
+	liability, _ := money.New(500_000, money.MXN())
+	if _, err = ledgerService.PostTransaction(ctx, "owner", cardAccount.ID(), domainledger.LiabilityCharge(), liability, date, "charge", testIdempotencyKey(t, "charge")); err != nil {
+		t.Fatal(err)
+	}
+	cards := NewCardRepository(pool)
+	statement, err := cards.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", cardAccount.ID(), domaincard.Issued, 280_000, "2026-09-09", "statement"), "statement", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := cards.ReplaceIntent(ctx, "owner", statement.CycleID, charge, cardTestDate(t, "2026-09-09"), "intent", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAmount, _ := money.New(100_000, money.MXN())
+	first, err := ledgerService.CreateTransfer(ctx, "owner", bank.ID(), cardAccount.ID(), firstAmount, date, "first", testIdempotencyKey(t, "first-transfer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = cards.SettleIntent(ctx, "owner", appcard.PaymentIntentSettlementInput{IntentID: intent.ID, TransferID: first.Transfer.ID(), Mutation: applicationledger.MutationIdentity{Key: testIdempotencyKey(t, "first-settle"), Fingerprint: applicationledger.CanonicalFingerprint("v1", "settle_credit_card_payment_intent", "owner", intent.ID, first.Transfer.ID())}}, "settlement-one", now); err != nil {
+		t.Fatal(err)
+	}
+	secondAmount, _ := money.New(200_000, money.MXN())
+	second, err := ledgerService.CreateTransfer(ctx, "owner", bank.ID(), cardAccount.ID(), secondAmount, date, "second", testIdempotencyKey(t, "second-transfer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO credit_card_payment_intent_settlements(id,owner_id,account_id,cycle_id,intent_id,transfer_id,amount_minor,currency,source_transaction_id,created_at) VALUES('raw-over','owner',$1,$2,$3,$4,200000,'MXN',$5,$6)`, cardAccount.ID(), statement.CycleID, intent.ID, second.Transfer.ID(), second.SourceTransaction.ID(), now)
+	if err == nil {
+		t.Fatal("raw over-settlement unexpectedly succeeded")
+	}
+	// Deferred integrity also rejects an active intent whose remaining scheduled flow is removed.
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE scheduled_cash_flows SET status='cancelled',updated_at=$1 WHERE owner_id='owner' AND source_kind='credit_card_payment_intent' AND source_id=$2 AND status='scheduled'`, now, intent.ID)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err == nil {
+		t.Fatal("active intent without its remaining flow committed")
+	}
+	finalAmount, _ := money.New(180_000, money.MXN())
+	final, err := ledgerService.CreateTransfer(ctx, "owner", bank.ID(), cardAccount.ID(), finalAmount, date, "final", testIdempotencyKey(t, "final-transfer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := cards.SettleIntent(ctx, "owner", appcard.PaymentIntentSettlementInput{IntentID: intent.ID, TransferID: final.Transfer.ID(), Mutation: applicationledger.MutationIdentity{Key: testIdempotencyKey(t, "final-settle"), Fingerprint: applicationledger.CanonicalFingerprint("v1", "settle_credit_card_payment_intent", "owner", intent.ID, final.Transfer.ID())}}, "settlement-final", now)
+	if err != nil || result.Intent.Status != domaincard.IntentSettled {
+		t.Fatalf("valid final settlement result=%+v err=%v", result, err)
+	}
+	var activeFlows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM scheduled_cash_flows WHERE owner_id='owner' AND source_kind='credit_card_payment_intent' AND source_id=$1 AND status='scheduled'`, intent.ID).Scan(&activeFlows); err != nil || activeFlows != 0 {
+		t.Fatalf("settled active flows=%d err=%v", activeFlows, err)
 	}
 }
 
