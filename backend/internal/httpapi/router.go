@@ -63,15 +63,22 @@ type ProjectionService interface {
 	CalculateSafeToSpend(context.Context, string, string) (domainprojection.SafeToSpendResult, error)
 }
 
-func NewHandler(authentication AuthenticationService, financial LedgerService, future ScheduleService, authConfig AuthConfig, projectionServices ...ProjectionService) http.Handler {
+func NewHandler(authentication AuthenticationService, financial LedgerService, future ScheduleService, authConfig AuthConfig, services ...any) http.Handler {
 	var projections ProjectionService
-	if len(projectionServices) > 0 {
-		projections = projectionServices[0]
+	var cards CardService
+	for _, service := range services {
+		if projection, ok := service.(ProjectionService); ok {
+			projections = projection
+		}
+		if cardService, ok := service.(CardService); ok {
+			cards = cardService
+		}
 	}
 	authenticationHandler := authHandler{authentication: authentication, config: authConfig}
 	financialHandler := ledgerHandler{authentication: authentication, ledger: financial, config: authConfig}
 	futureHandler := scheduleHandler{authentication: authentication, schedule: future, config: authConfig}
 	projectionHandler := projectionHandler{authentication: authentication, projection: projections, config: authConfig}
+	cardHTTPHandler := cardHandler{authentication: authentication, cards: cards, config: authConfig}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("POST /api/v1/auth/login", authenticationHandler.login)
@@ -104,5 +111,11 @@ func NewHandler(authentication AuthenticationService, financial LedgerService, f
 	mux.HandleFunc("PUT /api/v1/projection-policy", projectionHandler.replacePolicy)
 	mux.HandleFunc("GET /api/v1/projection", projectionHandler.calculate)
 	mux.HandleFunc("GET /api/v1/safe-to-spend", projectionHandler.safeToSpend)
+	mux.HandleFunc("POST /api/v1/credit-cards/{account_id}/statements", cardHTTPHandler.register)
+	mux.HandleFunc("GET /api/v1/credit-cards/{account_id}/statements", cardHTTPHandler.list)
+	mux.HandleFunc("GET /api/v1/credit-card-statements/{statement_id}", cardHTTPHandler.getStatement)
+	mux.HandleFunc("GET /api/v1/credit-card-cycles/{cycle_id}/payment-intent", cardHTTPHandler.getIntent)
+	mux.HandleFunc("PUT /api/v1/credit-card-cycles/{cycle_id}/payment-intent", cardHTTPHandler.putIntent)
+	mux.HandleFunc("POST /api/v1/credit-card-cycles/{cycle_id}/payment-intent/cancel", cardHTTPHandler.cancel)
 	return mux
 }

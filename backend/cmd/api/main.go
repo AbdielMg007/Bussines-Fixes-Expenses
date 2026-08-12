@@ -14,6 +14,7 @@ import (
 
 	"runway/backend/internal/auth"
 	"runway/backend/internal/auth/password"
+	"runway/backend/internal/card"
 	"runway/backend/internal/config"
 	"runway/backend/internal/httpapi"
 	"runway/backend/internal/ledger"
@@ -64,6 +65,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	creditCards, err := card.NewService(postgres.NewCardRepository(pool))
+	if err != nil {
+		return err
+	}
 
 	address := net.JoinHostPort(configuration.Host, configuration.Port)
 	server := &http.Server{
@@ -72,7 +77,7 @@ func run() error {
 			AllowedOrigin:        configuration.ApplicationOrigin,
 			CookieSecure:         configuration.CookieSecure,
 			SessionMaxAgeSeconds: int(configuration.SessionDuration / time.Second),
-		}, baselineProjection),
+		}, baselineProjection, creditCards),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
