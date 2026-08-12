@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { ApiError, api, type Account, type Projection, type SafeToSpend } from "../../lib/api";
 import { formatFinancialDate, formatMoney } from "../../lib/format";
+import { exclusionText, inclusionText, sourceText, t, type Language } from "../../lib/i18n";
 import { PolicyForm } from "./policy-form";
 
 type DashboardProps = {
@@ -11,17 +12,14 @@ type DashboardProps = {
   refreshToken: number;
   onDataChanged: () => void;
   onUnauthorized: () => void;
+  language: Language;
 };
 
-const statusCopy: Record<SafeToSpend["status"], string> = {
-  safe: "Your selected account and current projection both support this amount.",
-  constrained_by_future_cash_flow: "An upcoming cash-flow low is limiting today’s spend.",
-  constrained_by_funding_balance: "The selected funding account balance is the limiting factor.",
-  already_below_reserve: "Your baseline projection is already below the configured reserve.",
-  unsupported_funding_type: "This account cannot fund Safe-to-Spend yet.",
+const statusKeys: Record<SafeToSpend["status"], "safe" | "constrainedByFuture" | "constrainedByFunding" | "belowReserve" | "unsupportedFunding"> = {
+  safe: "safe", constrained_by_future_cash_flow: "constrainedByFuture", constrained_by_funding_balance: "constrainedByFunding", already_below_reserve: "belowReserve", unsupported_funding_type: "unsupportedFunding",
 };
 
-export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorized }: DashboardProps) {
+export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorized, language }: DashboardProps) {
   const eligible = accounts.filter((account) => account.status === "active" && (account.type === "cash" || account.type === "bank"));
   const [fundingID, setFundingID] = useState("");
   const [projection, setProjection] = useState<Projection | null>(null);
@@ -29,7 +27,7 @@ export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorize
   const [needsPolicy, setNeedsPolicy] = useState(false);
   const [policyNotice, setPolicyNotice] = useState("");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(false);
   const requestSequence = useRef(0);
 
   useEffect(() => {
@@ -42,7 +40,7 @@ export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorize
     const isCurrent = () => live && requestID === requestSequence.current;
     async function load() {
       setLoading(true);
-      setError("");
+      setError(false);
       setNeedsPolicy(false);
       setPolicyNotice("");
       try {
@@ -62,7 +60,7 @@ export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorize
           setPolicyNotice(cause.message);
           setProjection(null);
           setSafe(null);
-        } else setError(cause instanceof Error ? cause.message : "Unable to load the projection.");
+        } else setError(true);
       } finally {
         if (isCurrent()) setLoading(false);
       }
@@ -71,43 +69,43 @@ export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorize
     return () => { live = false; };
   }, [fundingID, refreshToken, onUnauthorized]);
 
-  if (loading) return <section className="panel state-panel">Loading your cash position…</section>;
-  if (needsPolicy) return <PolicyBootstrap accounts={accounts} notice={policyNotice} onDataChanged={onDataChanged} onUnauthorized={onUnauthorized} />;
-  if (error) return <section className="panel state-panel"><p className="form-error">{error}</p><button onClick={onDataChanged}>Try again</button></section>;
+  if (loading) return <section className="panel state-panel">{t(language, "loadingCashPosition")}</section>;
+  if (needsPolicy) return <PolicyBootstrap language={language} accounts={accounts} notice={policyNotice} onDataChanged={onDataChanged} onUnauthorized={onUnauthorized} />;
+  if (error) return <section className="panel state-panel"><p className="form-error">{t(language, "unableToLoadProjection")}</p><button onClick={onDataChanged}>{t(language, "retry")}</button></section>;
 
   return (
     <div className="dashboard-grid">
       <section className="hero-card">
-        <p className="eyebrow">Safe to spend today</p>
+        <p className="eyebrow">{t(language, "safeToSpendToday")}</p>
         {safe ? <>
-          <p className="hero-amount">{formatMoney(safe.safe_to_spend_minor, safe.currency)}</p>
-          <p className={`status ${safe.status}`}>{statusCopy[safe.status]}</p>
-          {safe.status === "already_below_reserve" && <p className="warning">Deficit: {formatMoney(safe.deficit_minor, safe.currency)}{safe.earliest_breach_date ? ` · earliest breach ${formatFinancialDate(safe.earliest_breach_date)}` : ""}</p>}
-        </> : <p className="muted">Choose an active cash or bank account to see Safe-to-Spend.</p>}
-        <label className="funding-select">Funding account
+          <p className="hero-amount">{formatMoney(safe.safe_to_spend_minor, safe.currency, language)}</p>
+          <p className={`status ${safe.status}`}>{t(language, statusKeys[safe.status])}</p>
+          {safe.status === "already_below_reserve" && <p className="warning">{t(language, "deficit")}: {formatMoney(safe.deficit_minor, safe.currency, language)}{safe.earliest_breach_date ? ` · ${t(language, "earliestBreach")} ${formatFinancialDate(safe.earliest_breach_date, language)}` : ""}</p>}
+        </> : <p className="muted">{t(language, "chooseFunding")}</p>}
+        <label className="funding-select">{t(language, "fundingAccount")}
           <select value={fundingID} onChange={(event) => setFundingID(event.target.value)} disabled={eligible.length === 0}>
-            {eligible.length === 0 ? <option>No eligible funding account</option> : eligible.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
+            {eligible.length === 0 ? <option>{t(language, "noEligibleFunding")}</option> : eligible.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}
           </select>
         </label>
       </section>
 
       {safe && <section className="metrics-card">
-        <Metric label="Funding account" value={formatMoney(safe.funding_account_balance_minor, safe.currency)} />
-        <Metric label="Opening liquid cash" value={formatMoney(safe.opening_liquid_balance_minor, safe.currency)} />
-        <Metric label="Reserve" value={formatMoney(safe.reserve_minor, safe.currency)} />
-        <Metric label="Projected minimum" value={formatMoney(safe.baseline_minimum_balance_minor, safe.currency)} />
+        <Metric label={t(language, "fundingAccount")} value={formatMoney(safe.funding_account_balance_minor, safe.currency, language)} />
+        <Metric label={t(language, "openingLiquidCash")} value={formatMoney(safe.opening_liquid_balance_minor, safe.currency, language)} />
+        <Metric label={t(language, "reserve")} value={formatMoney(safe.reserve_minor, safe.currency, language)} />
+        <Metric label={t(language, "projectedMinimum")} value={formatMoney(safe.baseline_minimum_balance_minor, safe.currency, language)} />
       </section>}
 
-      {eligible.length === 0 && <section className="panel state-panel"><h2>A cash or bank account is required</h2><p className="muted">Create an active cash or bank account, then include it in ProjectionPolicy.</p></section>}
-      {projection && <ProjectionTimeline projection={projection} />}
+      {eligible.length === 0 && <section className="panel state-panel"><h2>{t(language, "cashOrBankRequired")}</h2><p className="muted">{t(language, "cashOrBankRequiredDetail")}</p></section>}
+      {projection && <ProjectionTimeline language={language} projection={projection} />}
     </div>
   );
 }
 
-function PolicyBootstrap({ accounts, notice, onDataChanged, onUnauthorized }: Pick<DashboardProps, "accounts" | "onDataChanged" | "onUnauthorized"> & { notice: string }) {
+function PolicyBootstrap({ accounts, notice, onDataChanged, onUnauthorized, language }: Pick<DashboardProps, "accounts" | "onDataChanged" | "onUnauthorized" | "language"> & { notice: string }) {
   const [policyLoaded, setPolicyLoaded] = useState(false);
   const [policy, setPolicy] = useState<Awaited<ReturnType<typeof api.policy>> | undefined>();
-  const [policyError, setPolicyError] = useState("");
+  const [policyError, setPolicyError] = useState(false);
   const [unauthorized, setUnauthorized] = useState(false);
   useEffect(() => {
     let live = true;
@@ -123,33 +121,33 @@ function PolicyBootstrap({ accounts, notice, onDataChanged, onUnauthorized }: Pi
         // A missing policy is the legitimate bootstrap path. Other failures
         // are visible rather than being mistaken for missing configuration.
         if (!(cause instanceof ApiError && cause.status === 404)) {
-          setPolicyError(cause instanceof Error ? cause.message : "Unable to load projection settings.");
+          setPolicyError(true);
         }
       })
       .finally(() => { if (live) setPolicyLoaded(true); });
     return () => { live = false; };
   }, [onUnauthorized]);
-  if (unauthorized) return <section className="panel state-panel">Returning to sign in…</section>;
-  if (!policyLoaded) return <section className="panel state-panel">Loading settings…</section>;
-  if (policyError) return <section className="panel state-panel"><p className="form-error">{policyError}</p><p className="muted">Unable to load ProjectionPolicy. Try again after the service is available.</p></section>;
-  return <>{notice && <section className="panel state-panel"><p className="form-error">{notice}</p><p className="muted">Update ProjectionPolicy before Runway can calculate your cash timeline.</p></section>}<PolicyForm accounts={accounts} policy={policy} onSaved={onDataChanged} onUnauthorized={onUnauthorized} /></>;
+  if (unauthorized) return <section className="panel state-panel">{t(language, "returningToSignIn")}</section>;
+  if (!policyLoaded) return <section className="panel state-panel">{t(language, "loadingSettings")}</section>;
+  if (policyError) return <section className="panel state-panel"><p className="form-error">{t(language, "unableToLoadPolicy")}</p></section>;
+  return <>{notice && <section className="panel state-panel"><p className="form-error">{t(language, "invalidProjectionConfiguration")}</p><p className="muted">{t(language, "updatePolicy")}</p></section>}<PolicyForm language={language} accounts={accounts} policy={policy} onSaved={onDataChanged} onUnauthorized={onUnauthorized} /></>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <div><span>{label}</span><strong>{value}</strong></div>;
 }
 
-function ProjectionTimeline({ projection }: { projection: Projection }) {
+function ProjectionTimeline({ projection, language }: { projection: Projection; language: Language }) {
   return <section className="panel timeline-panel">
-    <div className="section-heading"><div><p className="eyebrow">Baseline projection</p><h2>Future cash timeline</h2></div><p className="muted">Opening {formatMoney(projection.opening_liquid_balance_minor, projection.currency)}</p></div>
-    {projection.events.length === 0 ? <p className="empty">No future projected events inside this horizon.</p> : <ol className="timeline">
+    <div className="section-heading"><div><p className="eyebrow">{t(language, "baselineProjection")}</p><h2>{t(language, "futureCashTimeline")}</h2></div><p className="muted">{t(language, "opening")} {formatMoney(projection.opening_liquid_balance_minor, projection.currency, language)}</p></div>
+    {projection.events.length === 0 ? <p className="empty">{t(language, "noFutureEvents")}</p> : <ol className="timeline">
       {projection.events.map((event) => <li key={event.id} className={event.direction}>
-        <time>{formatFinancialDate(event.financial_date)}</time>
-        <div><strong>{event.label || event.source_kind.replaceAll("_", " ")}</strong><span>{event.inclusion_basis.replaceAll("_", " ")}</span></div>
-        <b>{event.direction === "outflow" ? "−" : "+"}{formatMoney(event.amount_minor, projection.currency)}</b>
-        <strong className="after-balance">{formatMoney(event.balance_after_minor, projection.currency)}</strong>
+        <time>{formatFinancialDate(event.financial_date, language)}</time>
+        <div><strong>{event.label || sourceText(language, event.source_kind)}</strong><span>{inclusionText(language, event.inclusion_basis)}</span></div>
+        <b>{event.direction === "outflow" ? "−" : "+"}{formatMoney(event.amount_minor, projection.currency, language)}</b>
+        <strong className="after-balance">{formatMoney(event.balance_after_minor, projection.currency, language)}</strong>
       </li>)}
     </ol>}
-    {projection.exclusions.length > 0 && <details className="exclusions"><summary>Excluded future inflows ({projection.exclusions.length})</summary><ul>{projection.exclusions.map((item) => <li key={`${item.source_kind}:${item.source_id}`}>{item.label || item.source_kind.replaceAll("_", " ")} — {item.reasons.join(", ").replaceAll("_", " ")}</li>)}</ul></details>}
+    {projection.exclusions.length > 0 && <details className="exclusions"><summary>{t(language, "excludedInflows")} ({projection.exclusions.length})</summary><ul>{projection.exclusions.map((item) => <li key={`${item.source_kind}:${item.source_id}`}>{item.label || sourceText(language, item.source_kind)} — {item.reasons.map((reason) => exclusionText(language, reason)).join(", ")}</li>)}</ul></details>}
   </section>;
 }

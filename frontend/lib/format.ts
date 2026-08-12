@@ -1,5 +1,7 @@
-export function formatMoney(minorUnits: number, currency = "MXN"): string {
-  return new Intl.NumberFormat("en-MX", {
+import { displayLocale, t, type Language } from "./i18n";
+
+export function formatMoney(minorUnits: number, currency = "MXN", language: Language = "es"): string {
+  return new Intl.NumberFormat(displayLocale(language), {
     style: "currency",
     currency,
     currencyDisplay: "symbol",
@@ -10,10 +12,10 @@ export function formatMoney(minorUnits: number, currency = "MXN"): string {
 
 // Financial dates are date-only values. Rendering in UTC prevents a browser
 // timezone from shifting 2026-08-15 into the prior calendar day.
-export function formatFinancialDate(value: string): string {
+export function formatFinancialDate(value: string, language: Language = "es"): string {
   const [year, month, day] = value.split("-").map(Number);
   if (!year || !month || !day) return value;
-  return new Intl.DateTimeFormat("en-MX", {
+  return new Intl.DateTimeFormat(displayLocale(language), {
     timeZone: "UTC",
     month: "short",
     day: "numeric",
@@ -21,15 +23,15 @@ export function formatFinancialDate(value: string): string {
   }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
-export function parseMinorUnits(value: string): number {
+export function parseMinorUnits(value: string, language: Language = "es"): number {
   const normalized = value.trim();
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(normalized);
-  if (!match) throw new Error("Enter a non-negative amount with up to two decimal places.");
+  if (!match) throw new Error(t(language, "invalidAmount"));
 
   const whole = Number(match[1]);
   const fraction = Number((match[2] ?? "").padEnd(2, "0") || "0");
   if (!Number.isSafeInteger(whole) || whole > Math.floor(Number.MAX_SAFE_INTEGER / 100)) {
-    throw new Error("Amount is outside the browser-supported range.");
+    throw new Error(t(language, "amountOutOfRange"));
   }
   return whole * 100 + fraction;
 }

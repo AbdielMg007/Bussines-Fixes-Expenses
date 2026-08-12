@@ -2,17 +2,19 @@
 
 import { FormEvent, useState } from "react";
 
-import { ApiError, api, type Account, type ProjectionPolicy } from "../../lib/api";
+import { ApiError, NetworkError, api, type Account, type ProjectionPolicy } from "../../lib/api";
 import { parseMinorUnits } from "../../lib/format";
+import { t, type Language } from "../../lib/i18n";
 
 type PolicyFormProps = {
   accounts: Account[];
   policy?: ProjectionPolicy;
   onSaved: () => void;
   onUnauthorized?: () => void;
+  language: Language;
 };
 
-export function PolicyForm({ accounts, policy, onSaved, onUnauthorized }: PolicyFormProps) {
+export function PolicyForm({ accounts, policy, onSaved, onUnauthorized, language }: PolicyFormProps) {
   const liquidAccounts = accounts.filter((account) => account.status === "active" && (account.type === "cash" || account.type === "bank"));
   const [horizon, setHorizon] = useState(String(policy?.horizon_days ?? 60));
   const [reserve, setReserve] = useState(policy ? String(policy.reserve_minor / 100) : "0");
@@ -36,11 +38,11 @@ export function PolicyForm({ accounts, policy, onSaved, onUnauthorized }: Policy
     setSaving(true);
     try {
       const horizonDays = Number(horizon);
-      if (!Number.isInteger(horizonDays)) throw new Error("Horizon must be a whole number of days.");
+      if (!Number.isInteger(horizonDays)) throw new Error(t(language, "invalidHorizon"));
       await api.savePolicy({
         currency: "MXN",
         horizon_days: horizonDays,
-        reserve_minor: parseMinorUnits(reserve),
+        reserve_minor: parseMinorUnits(reserve, language),
         financial_timezone: timezone,
         account_selection: { mode, account_ids: mode === "explicit" ? selected : [] },
         inflow_policy: inflowPolicy,
@@ -52,7 +54,7 @@ export function PolicyForm({ accounts, policy, onSaved, onUnauthorized }: Policy
         onUnauthorized?.();
         return;
       }
-      setError(cause instanceof Error ? cause.message : "Unable to save projection settings.");
+      setError(cause instanceof ApiError || cause instanceof NetworkError || !(cause instanceof Error) ? t(language, "unableToSavePolicy") : cause.message);
     } finally {
       setSaving(false);
     }
@@ -61,37 +63,37 @@ export function PolicyForm({ accounts, policy, onSaved, onUnauthorized }: Policy
   return (
     <section className="panel policy-panel">
       <div>
-        <p className="eyebrow">Projection settings</p>
-        <h2>{policy ? "Update your cash projection" : "Set up your cash projection"}</h2>
-        <p className="muted">These settings define which cash accounts Runway projects. Nothing is saved until you choose Save.</p>
+        <p className="eyebrow">{t(language, "projectionSettings")}</p>
+        <h2>{policy ? t(language, "updateProjection") : t(language, "setupProjection")}</h2>
+        <p className="muted">{t(language, "policyDescription")}</p>
       </div>
       <form className="stack-form" onSubmit={submit}>
         <div className="form-grid">
-          <label>Horizon days<input inputMode="numeric" value={horizon} onChange={(event) => setHorizon(event.target.value)} required /></label>
-          <label>Cash reserve (MXN)<input inputMode="decimal" value={reserve} onChange={(event) => setReserve(event.target.value)} required /></label>
-          <label>Financial timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} required /></label>
-          <label>Inflow policy
+          <label>{t(language, "horizonDays")}<input inputMode="numeric" value={horizon} onChange={(event) => setHorizon(event.target.value)} required /></label>
+          <label>{t(language, "cashReserve")}<input inputMode="decimal" value={reserve} onChange={(event) => setReserve(event.target.value)} required /></label>
+          <label>{t(language, "financialTimezone")}<input value={timezone} onChange={(event) => setTimezone(event.target.value)} required /></label>
+          <label>{t(language, "inflowPolicy")}
             <select value={inflowPolicy} onChange={(event) => setInflowPolicy(event.target.value as typeof inflowPolicy)}>
-              <option value="confirmed_only">Confirmed inflows only</option>
-              <option value="include_expected">Include expected inflows</option>
+              <option value="confirmed_only">{t(language, "confirmedInflowsOnly")}</option>
+              <option value="include_expected">{t(language, "includeExpectedInflows")}</option>
             </select>
           </label>
         </div>
         <fieldset>
-          <legend>Liquid account selection</legend>
-          <label className="radio-row"><input type="radio" checked={mode === "all_active_liquid"} onChange={() => setMode("all_active_liquid")} />All active cash and bank accounts</label>
-          <label className="radio-row"><input type="radio" checked={mode === "explicit"} onChange={() => setMode("explicit")} />Choose specific accounts</label>
+          <legend>{t(language, "liquidAccountSelection")}</legend>
+          <label className="radio-row"><input type="radio" checked={mode === "all_active_liquid"} onChange={() => setMode("all_active_liquid")} />{t(language, "allActiveLiquid")}</label>
+          <label className="radio-row"><input type="radio" checked={mode === "explicit"} onChange={() => setMode("explicit")} />{t(language, "chooseSpecificAccounts")}</label>
           {mode === "explicit" && <div className="check-list">
             {staleSelectionIDs.map((id) => {
               const account = accounts.find((value) => value.id === id);
-              return <div key={id} className="stale-selection"><span><strong>{account?.name ?? `Unavailable account (${id})`}</strong><small>This saved selection can no longer participate in liquid cash.</small></span><button type="button" className="subtle-button" onClick={() => toggleAccount(id)}>Remove</button></div>;
+              return <div key={id} className="stale-selection"><span><strong>{account?.name ?? `${t(language, "unavailableAccount")} (${id})`}</strong><small>{t(language, "staleSelection")}</small></span><button type="button" className="subtle-button" onClick={() => toggleAccount(id)}>{t(language, "remove")}</button></div>;
             })}
             {liquidAccounts.map((account) => <label key={account.id} className="check-row"><input type="checkbox" checked={selected.includes(account.id)} onChange={() => toggleAccount(account.id)} />{account.name}</label>)}
-            {liquidAccounts.length === 0 && <p className="muted">Create an active cash or bank account first.</p>}
+            {liquidAccounts.length === 0 && <p className="muted">{t(language, "createLiquidAccountFirst")}</p>}
           </div>}
         </fieldset>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button type="submit" disabled={saving}>{saving ? "Saving…" : "Save projection settings"}</button>
+        <button type="submit" disabled={saving}>{saving ? t(language, "saving") : t(language, "saveProjectionSettings")}</button>
       </form>
     </section>
   );

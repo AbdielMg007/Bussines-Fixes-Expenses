@@ -25,6 +25,8 @@ h3 { font-size: 1rem; }
 .app-header nav { display: flex; gap: 0.35rem; }
 .app-header nav button.active { background: #dceee5; color: #0e6249; }
 .user-menu { align-items: center; color: #627069; display: flex; font-size: .82rem; gap: .5rem; }
+.language-selector select { margin: 0; min-width: 4.3rem; padding: .38rem .45rem; }
+.sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .app-content { margin: 0 auto; max-width: 81rem; padding: clamp(1rem, 4vw, 3rem); }
 .panel, .hero-card, .metrics-card { background: white; border: 1px solid #dde4df; border-radius: 1rem; box-shadow: 0 8px 22px rgba(22,48,37,.04); padding: clamp(1.1rem, 3vw, 1.7rem); }
 .state-panel { text-align: center; }
