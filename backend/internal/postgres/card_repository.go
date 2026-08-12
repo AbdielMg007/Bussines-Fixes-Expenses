@@ -95,6 +95,10 @@ func (r *CardRepository) RegisterStatement(ctx context.Context, owner string, in
 	if e != nil {
 		return domain.Statement{}, e
 	}
+	_, e = tx.Exec(ctx, `UPDATE credit_card_installment_allocations SET status='statement_allocated' WHERE owner_id=$1 AND account_id=$2 AND cycle_id=$3 AND status='pending'`, owner, in.AccountID, cycleID)
+	if e != nil {
+		return domain.Statement{}, e
+	}
 	_, e = tx.Exec(ctx, `UPDATE credit_card_payment_intents SET status='needs_review',updated_at=$1 WHERE cycle_id=$2 AND status='active' AND (amount_minor>$3 OR planned_date>$4::date)`, now, cycleID, s.Balance.MinorUnits(), s.Due.String())
 	if e != nil {
 		return domain.Statement{}, e

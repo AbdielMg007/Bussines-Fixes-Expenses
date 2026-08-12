@@ -14,6 +14,7 @@ import (
 	"runway/backend/internal/domain/account"
 	domaincard "runway/backend/internal/domain/card"
 	"runway/backend/internal/domain/financialdate"
+	domainledger "runway/backend/internal/domain/ledger"
 	"runway/backend/internal/domain/money"
 	applicationledger "runway/backend/internal/ledger"
 )
@@ -307,6 +308,318 @@ func TestCardDatabaseIntegrityProtectsCyclesReferencesAndHistory(t *testing.T) {
 	}
 	if _, err = pool.Exec(ctx, `DELETE FROM credit_card_statements WHERE id='statement-a'`); err == nil {
 		t.Fatalf("statement delete error = %v", err)
+	}
+}
+
+func TestInstallmentPlanConservesPrincipalAcrossStatementsAndExplicitPayments(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ledgerService, _ := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	creditCard := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	bank := createTestAccount(t, ledgerService, "owner", "Bank", account.Bank())
+	repository := NewCardRepository(pool)
+	principal, _ := money.New(1_200_000, money.MXN())
+	purchaseDate := cardTestDate(t, "2026-08-10")
+	purchase, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), principal, purchaseDate, "Laptop MSI purchase", testIdempotencyKey(t, "msi-purchase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := appcard.InstallmentPlanInput{AccountID: creditCard.ID(), Description: "Laptop MSI", PurchaseTransactionID: purchase.ID(), Principal: principal, InstallmentCount: 12, FirstCycleStart: cardTestDate(t, "2026-08-01"), FirstCycleEnd: cardTestDate(t, "2026-08-31"), Mutation: testMutation(t, "create-msi")}
+	plan, err := repository.CreateInstallmentPlan(ctx, "owner", input, "msi-plan", now)
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+	replay, err := repository.CreateInstallmentPlan(ctx, "owner", input, "ignored-on-replay", now)
+	if err != nil || replay.ID != plan.ID {
+		t.Fatalf("plan replay = %+v, error = %v", replay, err)
+	}
+	allocations, err := repository.ListInstallmentAllocations(ctx, "owner", plan.ID)
+	if err != nil || len(allocations) != 12 {
+		t.Fatalf("allocations = %d, error = %v", len(allocations), err)
+	}
+	for index, allocation := range allocations {
+		if allocation.InstallmentNumber != index+1 || allocation.Principal.MinorUnits() != 100_000 || allocation.Status != domaincard.InstallmentPending {
+			t.Fatalf("allocation %d = %+v", index, allocation)
+		}
+	}
+	summary, err := repository.GetInstallmentPlanSummary(ctx, "owner", plan.ID)
+	if err != nil || summary.PaidPrincipal.MinorUnits() != 0 || summary.OutstandingPrincipal.MinorUnits() != 1_200_000 {
+		t.Fatalf("initial summary = %+v, error = %v", summary, err)
+	}
+
+	statement, err := repository.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", creditCard.ID(), domaincard.Estimated, 500_000, "2026-09-09", "msi-statement-estimate"), "msi-statement-estimate", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", creditCard.ID(), domaincard.Issued, 450_000, "2026-09-09", "msi-statement-issued"), "msi-statement-issued", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repository.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", creditCard.ID(), domaincard.Issued, 400_000, "2026-09-09", "msi-statement-corrected"), "msi-statement-corrected", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	allocationsAfterStatements, err := repository.ListInstallmentAllocations(ctx, "owner", plan.ID)
+	if err != nil || len(allocationsAfterStatements) != 12 || allocationsAfterStatements[0].CycleID != statement.CycleID || allocationsAfterStatements[0].Status != domaincard.InstallmentStatementAllocated {
+		t.Fatalf("statement lineage allocations = %+v, error = %v", allocationsAfterStatements, err)
+	}
+
+	first := allocations[0]
+	paymentAmount, _ := money.New(100_000, money.MXN())
+	payment, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", first.ID, paymentAmount, testMutation(t, "pay-first-msi"), "payment-first", now.Add(3*time.Minute))
+	if err != nil || payment.Summary.PaidPrincipal.MinorUnits() != 100_000 || payment.Summary.OutstandingPrincipal.MinorUnits() != 1_100_000 {
+		t.Fatalf("pay first allocation = %+v, error = %v", payment, err)
+	}
+	replayedPayment, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", first.ID, paymentAmount, testMutation(t, "pay-first-msi"), "ignored-payment", now.Add(4*time.Minute))
+	if err != nil || replayedPayment.Payment.ID != payment.Payment.ID || replayedPayment.Summary.PaidPrincipal.MinorUnits() != 100_000 {
+		t.Fatalf("payment replay = %+v, error = %v", replayedPayment, err)
+	}
+	if _, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", first.ID, paymentAmount, testMutation(t, "overpay-first-msi"), "overpay", now.Add(5*time.Minute)); !errors.Is(err, domaincard.ErrInstallmentOverpayment) {
+		t.Fatalf("paid allocation overpayment error = %v", err)
+	}
+
+	date := purchaseDate
+	charge, _ := money.New(200_000, money.MXN())
+	if _, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), charge, date, "generic card charge", testIdempotencyKey(t, "generic-card-charge")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledgerService.PostTransaction(ctx, "owner", bank.ID(), domainledger.AssetInflow(), charge, date, "bank funds", testIdempotencyKey(t, "generic-bank-funds")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledgerService.CreateTransfer(ctx, "owner", bank.ID(), creditCard.ID(), charge, date, "generic card payment", testIdempotencyKey(t, "generic-card-payment")); err != nil {
+		t.Fatal(err)
+	}
+	afterGenericPayment, err := repository.GetInstallmentPlanSummary(ctx, "owner", plan.ID)
+	if err != nil || afterGenericPayment.PaidPrincipal.MinorUnits() != 100_000 || afterGenericPayment.OutstandingPrincipal.MinorUnits() != 1_100_000 {
+		t.Fatalf("generic card payment changed MSI principal = %+v, error = %v", afterGenericPayment, err)
+	}
+}
+
+func TestInstallmentPrincipalPaymentsSerializeAndDatabaseProtectsLineage(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ledgerService, _ := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	creditCard := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	cash := createTestAccount(t, ledgerService, "owner", "Cash", account.Cash())
+	repository := NewCardRepository(pool)
+	principal, _ := money.New(1_000, money.MXN())
+	purchaseDate := cardTestDate(t, "2026-08-10")
+	purchase, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), principal, purchaseDate, "MSI purchase", testIdempotencyKey(t, "concurrent-msi-purchase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := repository.CreateInstallmentPlan(ctx, "owner", appcard.InstallmentPlanInput{AccountID: creditCard.ID(), Description: "Three MSI", PurchaseTransactionID: purchase.ID(), Principal: principal, InstallmentCount: 1, FirstCycleStart: cardTestDate(t, "2026-08-01"), FirstCycleEnd: cardTestDate(t, "2026-08-31"), Mutation: testMutation(t, "create-concurrent-msi")}, "concurrent-plan", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allocations, err := repository.ListInstallmentAllocations(ctx, "owner", plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, _ := money.New(700, money.MXN())
+	var wait sync.WaitGroup
+	wait.Add(2)
+	errorsFound := make(chan error, 2)
+	for index := 0; index < 2; index++ {
+		go func(index int) {
+			defer wait.Done()
+			_, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", allocations[0].ID, amount, testMutation(t, fmt.Sprintf("concurrent-msi-%d", index)), fmt.Sprintf("concurrent-payment-%d", index), now.Add(time.Minute))
+			errorsFound <- err
+		}(index)
+	}
+	wait.Wait()
+	close(errorsFound)
+	successes := 0
+	for err := range errorsFound {
+		if err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent payment successes = %d", successes)
+	}
+	summary, err := repository.GetInstallmentPlanSummary(ctx, "owner", plan.ID)
+	if err != nil || summary.PaidPrincipal.MinorUnits() != 700 || summary.OutstandingPrincipal.MinorUnits() != 300 {
+		t.Fatalf("concurrent summary = %+v, error = %v", summary, err)
+	}
+	fullyPaidPurchase, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), principal, purchaseDate, "second MSI purchase", testIdempotencyKey(t, "fully-paid-msi-purchase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullyPaidPlan, err := repository.CreateInstallmentPlan(ctx, "owner", appcard.InstallmentPlanInput{AccountID: creditCard.ID(), Description: "Fully paid MSI", PurchaseTransactionID: fullyPaidPurchase.ID(), Principal: principal, InstallmentCount: 1, FirstCycleStart: cardTestDate(t, "2026-08-01"), FirstCycleEnd: cardTestDate(t, "2026-08-31"), Mutation: testMutation(t, "create-fully-paid-msi")}, "fully-paid-plan", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullyPaidAllocations, err := repository.ListInstallmentAllocations(ctx, "owner", fullyPaidPlan.ID)
+	if err != nil || len(fullyPaidAllocations) != 1 {
+		t.Fatalf("fully paid allocations = %+v, error = %v", fullyPaidAllocations, err)
+	}
+	half, _ := money.New(500, money.MXN())
+	var fullyPaidWait sync.WaitGroup
+	fullyPaidWait.Add(2)
+	fullyPaidErrors := make(chan error, 2)
+	for index := 0; index < 2; index++ {
+		go func(index int) {
+			defer fullyPaidWait.Done()
+			_, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", fullyPaidAllocations[0].ID, half, testMutation(t, fmt.Sprintf("concurrent-full-msi-%d", index)), fmt.Sprintf("concurrent-full-payment-%d", index), now.Add(2*time.Minute))
+			fullyPaidErrors <- err
+		}(index)
+	}
+	fullyPaidWait.Wait()
+	close(fullyPaidErrors)
+	fullyPaidSuccesses := 0
+	for err := range fullyPaidErrors {
+		if err == nil {
+			fullyPaidSuccesses++
+		}
+	}
+	if fullyPaidSuccesses != 2 {
+		t.Fatalf("concurrent full-payment successes = %d", fullyPaidSuccesses)
+	}
+	fullyPaidSummary, err := repository.GetInstallmentPlanSummary(ctx, "owner", fullyPaidPlan.ID)
+	if err != nil || fullyPaidSummary.PaidPrincipal.MinorUnits() != 1_000 || fullyPaidSummary.OutstandingPrincipal.MinorUnits() != 0 || fullyPaidSummary.Plan.Status != domaincard.InstallmentPlanCompleted {
+		t.Fatalf("concurrent full-payment summary = %+v, error = %v", fullyPaidSummary, err)
+	}
+	fullyPaidAllocations, err = repository.ListInstallmentAllocations(ctx, "owner", fullyPaidPlan.ID)
+	if err != nil || fullyPaidAllocations[0].Status != domaincard.InstallmentPaid {
+		t.Fatalf("concurrent full-payment allocation = %+v, error = %v", fullyPaidAllocations, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE credit_card_installment_principal_payments SET amount_minor=1 WHERE plan_id=$1`, plan.ID); err == nil {
+		t.Fatal("principal payment history was mutable")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE credit_card_installment_allocations SET status='paid' WHERE id=$1`, allocations[0].ID); err == nil {
+		t.Fatal("allocation could be marked paid without complete principal payment")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO credit_card_installment_allocations(id,owner_id,account_id,plan_id,cycle_id,installment_number,schedule_version,principal_minor,currency,status,created_at) VALUES('duplicate-installment','owner',$1,$2,$3,1,1,1,'MXN','pending',$4)`, creditCard.ID(), plan.ID, allocations[0].CycleID, now); err == nil {
+		t.Fatal("duplicate active installment number was accepted")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO credit_card_installment_plans(id,owner_id,account_id,description,purchase_transaction_id,original_principal_minor,currency,installment_count,first_cycle_id,status,schedule_version,created_at,updated_at) VALUES('cash-plan','owner',$1,'invalid',$2,1,'MXN',1,$3,'active',1,$4,$4)`, cash.ID(), purchase.ID(), allocations[0].CycleID, now); err == nil {
+		t.Fatalf("non-card plan error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO credit_card_installment_allocations(id,owner_id,account_id,plan_id,cycle_id,installment_number,schedule_version,principal_minor,currency,status,created_at) VALUES('cross-card-allocation','owner',$1,$2,$3,2,1,1,'MXN','pending',$4)`, cash.ID(), plan.ID, allocations[0].CycleID, now); !hasPostgresCode(err, "23503") {
+		t.Fatalf("cross-card allocation error = %v", err)
+	}
+}
+
+func TestInstallmentCycleAndPaymentLifecycleConstraints(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	ledgerService, err := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	creditCard := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	repository := NewCardRepository(pool)
+	principal, _ := money.New(1_000, money.MXN())
+	purchaseDate := cardTestDate(t, "2026-08-10")
+	createPlan := func(name string, installments int) (domaincard.InstallmentPlan, domainledger.Transaction) {
+		t.Helper()
+		purchase, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), principal, purchaseDate, name+" purchase", testIdempotencyKey(t, name+"-purchase"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, err := repository.CreateInstallmentPlan(ctx, "owner", appcard.InstallmentPlanInput{AccountID: creditCard.ID(), Description: name, PurchaseTransactionID: purchase.ID(), Principal: principal, InstallmentCount: installments, FirstCycleStart: cardTestDate(t, "2026-08-01"), FirstCycleEnd: cardTestDate(t, "2026-08-31"), Mutation: testMutation(t, name+"-plan")}, name+"-plan", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return plan, purchase
+	}
+
+	plan, planPurchase := createPlan("lifecycle", 1)
+	if _, err := repository.CreateInstallmentPlan(ctx, "owner", appcard.InstallmentPlanInput{AccountID: creditCard.ID(), Description: "duplicate source", PurchaseTransactionID: planPurchase.ID(), Principal: principal, InstallmentCount: 1, FirstCycleStart: cardTestDate(t, "2026-08-01"), FirstCycleEnd: cardTestDate(t, "2026-08-31"), Mutation: testMutation(t, "duplicate-source-plan")}, "duplicate-source-plan", now); err == nil {
+		t.Fatal("one liability charge backed more than one installment plan")
+	}
+	allocations, err := repository.ListInstallmentAllocations(ctx, "owner", plan.ID)
+	if err != nil || len(allocations) != 1 {
+		t.Fatalf("lifecycle allocations = %+v, error = %v", allocations, err)
+	}
+	allocation := allocations[0]
+
+	// A second plan may use the same card cycle, but duplicate allocations in
+	// one plan/version may not.
+	secondPlan, _ := createPlan("same-cycle-other-plan", 1)
+	secondAllocations, err := repository.ListInstallmentAllocations(ctx, "owner", secondPlan.ID)
+	if err != nil || len(secondAllocations) != 1 || secondAllocations[0].CycleID != allocation.CycleID {
+		t.Fatalf("different plan same cycle = %+v, error = %v", secondAllocations, err)
+	}
+	duplicatePurchase, err := ledgerService.PostTransaction(ctx, "owner", creditCard.ID(), domainledger.LiabilityCharge(), principal, purchaseDate, "duplicate cycle purchase", testIdempotencyKey(t, "duplicate-cycle-purchase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO credit_card_installment_plans(id,owner_id,account_id,description,purchase_transaction_id,original_principal_minor,currency,installment_count,first_cycle_id,status,schedule_version,created_at,updated_at) VALUES('duplicate-cycle-plan','owner',$1,'duplicate cycle',$2,1000,'MXN',2,$3,'active',1,$4,$4)`, creditCard.ID(), duplicatePurchase.ID(), allocation.CycleID, now)
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO credit_card_installment_allocations(id,owner_id,account_id,plan_id,cycle_id,installment_number,schedule_version,principal_minor,currency,status,created_at) VALUES('duplicate-cycle-allocation-1','owner',$1,'duplicate-cycle-plan',$2,1,1,500,'MXN','pending',$3)`, creditCard.ID(), allocation.CycleID, now)
+	}
+	if err == nil {
+		_, err = tx.Exec(ctx, `INSERT INTO credit_card_installment_allocations(id,owner_id,account_id,plan_id,cycle_id,installment_number,schedule_version,principal_minor,currency,status,created_at) VALUES('duplicate-cycle-allocation-2','owner',$1,'duplicate-cycle-plan',$2,2,1,500,'MXN','pending',$3)`, creditCard.ID(), allocation.CycleID, now)
+	}
+	if !hasPostgresCode(err, "23505") {
+		t.Fatalf("duplicate plan/version/cycle error = %v", err)
+	}
+	_ = tx.Rollback(ctx)
+
+	// Deferred lifecycle checks reject payment truth that has not been reflected
+	// in allocation and plan status.
+	insertTwoPayments := func(txID string, updateAllocation, updatePlan bool) error {
+		t.Helper()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		for index := 1; index <= 2; index++ {
+			if _, err := tx.Exec(ctx, `INSERT INTO credit_card_installment_principal_payments(id,owner_id,account_id,plan_id,allocation_id,amount_minor,currency,created_at) VALUES($1,'owner',$2,$3,$4,500,'MXN',$5)`, fmt.Sprintf("%s-%d", txID, index), creditCard.ID(), plan.ID, allocation.ID, now); err != nil {
+				return err
+			}
+		}
+		if updateAllocation {
+			if _, err := tx.Exec(ctx, `UPDATE credit_card_installment_allocations SET status='paid' WHERE id=$1`, allocation.ID); err != nil {
+				return err
+			}
+		}
+		if updatePlan {
+			if _, err := tx.Exec(ctx, `UPDATE credit_card_installment_plans SET status='completed',updated_at=$1 WHERE id=$2`, now.Add(time.Minute), plan.ID); err != nil {
+				return err
+			}
+		}
+		return tx.Commit(ctx)
+	}
+	if err := insertTwoPayments("nonpaid-allocation", false, false); !hasPostgresCode(err, "23514") {
+		t.Fatalf("fully paid non-paid allocation commit error = %v", err)
+	}
+	if err := insertTwoPayments("active-plan", true, false); !hasPostgresCode(err, "23514") {
+		t.Fatalf("fully paid active plan commit error = %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE credit_card_installment_allocations SET status='paid' WHERE id=$1`, allocation.ID); err == nil {
+		t.Fatal("unpaid allocation could be marked paid")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE credit_card_installment_plans SET status='completed',updated_at=$1 WHERE id=$2`, now.Add(time.Minute), plan.ID); err == nil {
+		t.Fatal("incomplete plan could be marked completed")
+	}
+
+	half, _ := money.New(500, money.MXN())
+	if _, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", allocation.ID, half, testMutation(t, "lifecycle-payment-one"), "lifecycle-payment-one", now); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := repository.RecordInstallmentPrincipalPayment(ctx, "owner", allocation.ID, half, testMutation(t, "lifecycle-payment-two"), "lifecycle-payment-two", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Summary.Plan.Status != domaincard.InstallmentPlanCompleted || completed.Summary.PaidPrincipal.MinorUnits() != 1_000 || completed.Summary.OutstandingPrincipal.MinorUnits() != 0 {
+		t.Fatalf("completed summary = %+v", completed.Summary)
+	}
+	updated, err := repository.ListInstallmentAllocations(ctx, "owner", plan.ID)
+	if err != nil || updated[0].Status != domaincard.InstallmentPaid {
+		t.Fatalf("completed allocation = %+v, error = %v", updated, err)
 	}
 }
 

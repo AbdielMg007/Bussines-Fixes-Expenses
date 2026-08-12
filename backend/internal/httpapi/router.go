@@ -117,5 +117,10 @@ func NewHandler(authentication AuthenticationService, financial LedgerService, f
 	mux.HandleFunc("GET /api/v1/credit-card-cycles/{cycle_id}/payment-intent", cardHTTPHandler.getIntent)
 	mux.HandleFunc("PUT /api/v1/credit-card-cycles/{cycle_id}/payment-intent", cardHTTPHandler.putIntent)
 	mux.HandleFunc("POST /api/v1/credit-card-cycles/{cycle_id}/payment-intent/cancel", cardHTTPHandler.cancel)
+	mux.HandleFunc("POST /api/v1/credit-cards/{account_id}/installment-plans", cardHTTPHandler.createInstallmentPlan)
+	mux.HandleFunc("GET /api/v1/credit-cards/{account_id}/installment-plans", cardHTTPHandler.listInstallmentPlans)
+	mux.HandleFunc("GET /api/v1/installment-plans/{plan_id}", cardHTTPHandler.getInstallmentPlan)
+	mux.HandleFunc("GET /api/v1/installment-plans/{plan_id}/allocations", cardHTTPHandler.listInstallmentAllocations)
+	mux.HandleFunc("POST /api/v1/installment-allocations/{allocation_id}/principal-payments", cardHTTPHandler.recordInstallmentPrincipalPayment)
 	return mux
 }

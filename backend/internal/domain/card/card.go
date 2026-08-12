@@ -16,6 +16,10 @@ var (
 	ErrInvalidPaymentIntent             = errors.New("invalid payment intent")
 	ErrPaymentIntentCancelled           = errors.New("cancelled payment intent cannot be replaced")
 	ErrNoAuthoritativeStatement         = errors.New("no authoritative statement")
+	ErrInvalidInstallmentPlan           = errors.New("invalid installment plan")
+	ErrInvalidInstallmentAllocation     = errors.New("invalid installment allocation")
+	ErrInstallmentOverpayment           = errors.New("installment principal payment exceeds unpaid allocation")
+	ErrInstallmentPlanCompleted         = errors.New("installment plan is completed")
 )
 
 type Authority string

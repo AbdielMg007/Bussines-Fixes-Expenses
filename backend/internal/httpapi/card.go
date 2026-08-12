@@ -21,6 +21,12 @@ type CardService interface {
 	GetIntent(context.Context, string, string) (domain.PaymentIntent, error)
 	ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date) (domain.PaymentIntent, error)
 	CancelIntent(context.Context, string, string) (domain.PaymentIntent, error)
+	CreateInstallmentPlan(context.Context, string, app.InstallmentPlanInput) (domain.InstallmentPlan, error)
+	GetInstallmentPlan(context.Context, string, string) (domain.InstallmentPlan, error)
+	ListInstallmentPlans(context.Context, string, string) ([]domain.InstallmentPlan, error)
+	ListInstallmentAllocations(context.Context, string, string) ([]domain.InstallmentAllocation, error)
+	GetInstallmentPlanSummary(context.Context, string, string) (app.InstallmentPlanSummary, error)
+	RecordInstallmentPrincipalPayment(context.Context, string, string, money.Money, ledger.MutationIdentity) (app.InstallmentPrincipalPaymentResult, error)
 }
 type cardHandler struct {
 	authentication AuthenticationService
@@ -41,6 +47,19 @@ type intentRequest struct {
 	Amount   int64  `json:"amount_minor"`
 	Currency string `json:"currency"`
 	Planned  string `json:"planned_date"`
+}
+type installmentPlanRequest struct {
+	Description           string `json:"description"`
+	PurchaseTransactionID string `json:"purchase_transaction_id"`
+	Principal             *int64 `json:"original_principal_minor"`
+	Currency              string `json:"currency"`
+	InstallmentCount      int    `json:"installment_count"`
+	FirstCycleStart       string `json:"first_cycle_start"`
+	FirstCycleEnd         string `json:"first_cycle_end"`
+}
+type installmentPrincipalPaymentRequest struct {
+	Amount   *int64 `json:"amount_minor"`
+	Currency string `json:"currency"`
 }
 type statementResponse struct {
 	ID, AccountID, CycleID, Authority, Currency, DueDate, SupersededByID string     `json:"-"`
@@ -200,6 +219,141 @@ func (h cardHandler) cancel(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, mapIntent(x))
 }
+func (h cardHandler) createInstallmentPlan(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, ok := parseIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request installmentPlanRequest
+	if !decodeLedgerRequest(w, r, &request) {
+		return
+	}
+	if request.Principal == nil || request.PurchaseTransactionID == "" {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	currency, err := money.ParseCurrency(request.Currency)
+	if err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	principal, err := money.New(*request.Principal, currency)
+	if err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if principal.MinorUnits() <= 0 {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	start, err := financialdate.Parse(request.FirstCycleStart)
+	if err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	end, err := financialdate.Parse(request.FirstCycleEnd)
+	if err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	accountID := r.PathValue("account_id")
+	plan, err := h.cards.CreateInstallmentPlan(r.Context(), owner, app.InstallmentPlanInput{
+		AccountID: accountID, Description: request.Description, PurchaseTransactionID: request.PurchaseTransactionID, Principal: principal, InstallmentCount: request.InstallmentCount, FirstCycleStart: start, FirstCycleEnd: end,
+		Mutation: ledger.MutationIdentity{Key: key, Fingerprint: ledger.CanonicalFingerprint("v1", "create_installment_plan", owner, accountID, request.Description, request.PurchaseTransactionID, itoa(*request.Principal), request.Currency, itoa(int64(request.InstallmentCount)), request.FirstCycleStart, request.FirstCycleEnd)},
+	})
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, mapInstallmentPlan(plan))
+}
+func (h cardHandler) listInstallmentPlans(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.auth(w, r)
+	if !ok {
+		return
+	}
+	plans, err := h.cards.ListInstallmentPlans(r.Context(), owner, r.PathValue("account_id"))
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	response := make([]any, 0, len(plans))
+	for _, plan := range plans {
+		response = append(response, mapInstallmentPlan(plan))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+func (h cardHandler) getInstallmentPlan(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.auth(w, r)
+	if !ok {
+		return
+	}
+	summary, err := h.cards.GetInstallmentPlanSummary(r.Context(), owner, r.PathValue("plan_id"))
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, mapInstallmentPlanSummary(summary))
+}
+func (h cardHandler) listInstallmentAllocations(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.auth(w, r)
+	if !ok {
+		return
+	}
+	allocations, err := h.cards.ListInstallmentAllocations(r.Context(), owner, r.PathValue("plan_id"))
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	response := make([]any, 0, len(allocations))
+	for _, allocation := range allocations {
+		response = append(response, mapInstallmentAllocation(allocation))
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+func (h cardHandler) recordInstallmentPrincipalPayment(w http.ResponseWriter, r *http.Request) {
+	owner, ok := h.mutate(w, r)
+	if !ok {
+		return
+	}
+	key, ok := parseIdempotencyKey(w, r)
+	if !ok {
+		return
+	}
+	var request installmentPrincipalPaymentRequest
+	if !decodeLedgerRequest(w, r, &request) {
+		return
+	}
+	if request.Amount == nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	currency, err := money.ParseCurrency(request.Currency)
+	if err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	amount, err := money.New(*request.Amount, currency)
+	if err != nil {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	if amount.MinorUnits() <= 0 {
+		writeError(w, 400, "invalid request")
+		return
+	}
+	allocationID := r.PathValue("allocation_id")
+	result, err := h.cards.RecordInstallmentPrincipalPayment(r.Context(), owner, allocationID, amount, ledger.MutationIdentity{Key: key, Fingerprint: ledger.CanonicalFingerprint("v1", "record_installment_principal_payment", owner, allocationID, itoa(*request.Amount), request.Currency)})
+	if err != nil {
+		h.err(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, mapInstallmentPrincipalPaymentResult(result))
+}
 func (h cardHandler) auth(w http.ResponseWriter, r *http.Request) (string, bool) {
 	secureResponse(w)
 	if h.cards == nil {
@@ -234,7 +388,7 @@ func (h cardHandler) err(w http.ResponseWriter, e error) {
 		writeError(w, 404, "resource not found")
 		return
 	}
-	if errors.Is(e, domain.ErrIssuedCannotBeReplacedByEstimate) || errors.Is(e, domain.ErrPaymentIntentCancelled) || errors.Is(e, app.ErrConflict) {
+	if errors.Is(e, domain.ErrIssuedCannotBeReplacedByEstimate) || errors.Is(e, domain.ErrPaymentIntentCancelled) || errors.Is(e, domain.ErrInstallmentOverpayment) || errors.Is(e, domain.ErrInstallmentPlanCompleted) || errors.Is(e, app.ErrConflict) {
 		writeError(w, 409, "request conflicts with current statement state")
 		return
 	}
@@ -260,6 +414,21 @@ func mapStatement(s domain.Statement) map[string]any {
 }
 func mapIntent(x domain.PaymentIntent) map[string]any {
 	return map[string]any{"id": x.ID, "account_id": x.AccountID, "cycle_id": x.CycleID, "amount_minor": x.Amount.MinorUnits(), "currency": x.Amount.Currency().Code(), "planned_date": x.Planned.String(), "status": x.Status, "version": x.Version, "created_at": x.CreatedAt, "updated_at": x.UpdatedAt}
+}
+func mapInstallmentPlan(plan domain.InstallmentPlan) map[string]any {
+	return map[string]any{"id": plan.ID, "account_id": plan.AccountID, "description": plan.Description, "purchase_transaction_id": plan.PurchaseTransactionID, "original_principal_minor": plan.OriginalPrincipal.MinorUnits(), "currency": plan.OriginalPrincipal.Currency().Code(), "installment_count": plan.InstallmentCount, "first_cycle_id": plan.FirstCycleID, "status": plan.Status, "schedule_version": plan.ScheduleVersion, "created_at": plan.CreatedAt, "updated_at": plan.UpdatedAt}
+}
+func mapInstallmentPlanSummary(summary app.InstallmentPlanSummary) map[string]any {
+	response := mapInstallmentPlan(summary.Plan)
+	response["paid_principal_minor"] = summary.PaidPrincipal.MinorUnits()
+	response["outstanding_principal_minor"] = summary.OutstandingPrincipal.MinorUnits()
+	return response
+}
+func mapInstallmentAllocation(allocation domain.InstallmentAllocation) map[string]any {
+	return map[string]any{"id": allocation.ID, "plan_id": allocation.PlanID, "cycle_id": allocation.CycleID, "installment_number": allocation.InstallmentNumber, "schedule_version": allocation.ScheduleVersion, "principal_minor": allocation.Principal.MinorUnits(), "currency": allocation.Principal.Currency().Code(), "status": allocation.Status, "created_at": allocation.CreatedAt}
+}
+func mapInstallmentPrincipalPaymentResult(result app.InstallmentPrincipalPaymentResult) map[string]any {
+	return map[string]any{"id": result.Payment.ID, "allocation_id": result.Payment.AllocationID, "plan_id": result.Payment.PlanID, "amount_minor": result.Payment.Amount.MinorUnits(), "currency": result.Payment.Amount.Currency().Code(), "created_at": result.Payment.CreatedAt, "plan": mapInstallmentPlanSummary(result.Summary)}
 }
 func itoa(v int64) string { return fmt.Sprintf("%d", v) }
 func ptrInt(v *int64) string {

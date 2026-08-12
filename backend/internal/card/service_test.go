@@ -9,6 +9,7 @@ import (
 	domain "runway/backend/internal/domain/card"
 	"runway/backend/internal/domain/financialdate"
 	"runway/backend/internal/domain/money"
+	ledger "runway/backend/internal/ledger"
 )
 
 func TestServiceRejectsInvalidStatementAuthorityBeforePersistence(t *testing.T) {
@@ -50,4 +51,22 @@ func (f *fakeRepository) ReplaceIntent(context.Context, string, string, money.Mo
 }
 func (f *fakeRepository) CancelIntent(context.Context, string, string, time.Time) (domain.PaymentIntent, error) {
 	return domain.PaymentIntent{}, nil
+}
+func (f *fakeRepository) CreateInstallmentPlan(context.Context, string, InstallmentPlanInput, string, time.Time) (domain.InstallmentPlan, error) {
+	return domain.InstallmentPlan{}, nil
+}
+func (f *fakeRepository) GetInstallmentPlan(context.Context, string, string) (domain.InstallmentPlan, error) {
+	return domain.InstallmentPlan{}, nil
+}
+func (f *fakeRepository) ListInstallmentPlans(context.Context, string, string) ([]domain.InstallmentPlan, error) {
+	return nil, nil
+}
+func (f *fakeRepository) ListInstallmentAllocations(context.Context, string, string) ([]domain.InstallmentAllocation, error) {
+	return nil, nil
+}
+func (f *fakeRepository) GetInstallmentPlanSummary(context.Context, string, string) (InstallmentPlanSummary, error) {
+	return InstallmentPlanSummary{}, nil
+}
+func (f *fakeRepository) RecordInstallmentPrincipalPayment(context.Context, string, string, money.Money, ledger.MutationIdentity, string, time.Time) (InstallmentPrincipalPaymentResult, error) {
+	return InstallmentPrincipalPaymentResult{}, nil
 }

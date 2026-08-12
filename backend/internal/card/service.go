@@ -20,6 +20,25 @@ type StatementInput struct {
 	Minimum, AvoidInterest *money.Money
 	Mutation               ledger.MutationIdentity
 }
+type InstallmentPlanInput struct {
+	AccountID             string
+	Description           string
+	PurchaseTransactionID string
+	Principal             money.Money
+	InstallmentCount      int
+	FirstCycleStart       financialdate.Date
+	FirstCycleEnd         financialdate.Date
+	Mutation              ledger.MutationIdentity
+}
+type InstallmentPrincipalPaymentResult struct {
+	Payment domain.InstallmentPrincipalPayment
+	Summary InstallmentPlanSummary
+}
+type InstallmentPlanSummary struct {
+	Plan                 domain.InstallmentPlan
+	PaidPrincipal        money.Money
+	OutstandingPrincipal money.Money
+}
 type Repository interface {
 	RegisterStatement(context.Context, string, StatementInput, string, time.Time) (domain.Statement, error)
 	ListStatements(context.Context, string, string) ([]domain.Statement, error)
@@ -27,6 +46,12 @@ type Repository interface {
 	GetIntent(context.Context, string, string) (domain.PaymentIntent, error)
 	ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date, string, time.Time) (domain.PaymentIntent, error)
 	CancelIntent(context.Context, string, string, time.Time) (domain.PaymentIntent, error)
+	CreateInstallmentPlan(context.Context, string, InstallmentPlanInput, string, time.Time) (domain.InstallmentPlan, error)
+	GetInstallmentPlan(context.Context, string, string) (domain.InstallmentPlan, error)
+	ListInstallmentPlans(context.Context, string, string) ([]domain.InstallmentPlan, error)
+	ListInstallmentAllocations(context.Context, string, string) ([]domain.InstallmentAllocation, error)
+	GetInstallmentPlanSummary(context.Context, string, string) (InstallmentPlanSummary, error)
+	RecordInstallmentPrincipalPayment(context.Context, string, string, money.Money, ledger.MutationIdentity, string, time.Time) (InstallmentPrincipalPaymentResult, error)
 }
 type Service struct {
 	repo Repository
@@ -71,6 +96,38 @@ func (s *Service) ReplaceIntent(ctx context.Context, owner, cycle string, amount
 }
 func (s *Service) CancelIntent(ctx context.Context, owner, cycle string) (domain.PaymentIntent, error) {
 	return s.repo.CancelIntent(ctx, owner, cycle, s.now().UTC())
+}
+func (s *Service) CreateInstallmentPlan(ctx context.Context, owner string, in InstallmentPlanInput) (domain.InstallmentPlan, error) {
+	if owner == "" {
+		return domain.InstallmentPlan{}, ErrNotFound
+	}
+	id, err := s.id()
+	if err != nil {
+		return domain.InstallmentPlan{}, err
+	}
+	return s.repo.CreateInstallmentPlan(ctx, owner, in, id, s.now().UTC())
+}
+func (s *Service) GetInstallmentPlan(ctx context.Context, owner, planID string) (domain.InstallmentPlan, error) {
+	return s.repo.GetInstallmentPlan(ctx, owner, planID)
+}
+func (s *Service) ListInstallmentPlans(ctx context.Context, owner, accountID string) ([]domain.InstallmentPlan, error) {
+	return s.repo.ListInstallmentPlans(ctx, owner, accountID)
+}
+func (s *Service) ListInstallmentAllocations(ctx context.Context, owner, planID string) ([]domain.InstallmentAllocation, error) {
+	return s.repo.ListInstallmentAllocations(ctx, owner, planID)
+}
+func (s *Service) GetInstallmentPlanSummary(ctx context.Context, owner, planID string) (InstallmentPlanSummary, error) {
+	return s.repo.GetInstallmentPlanSummary(ctx, owner, planID)
+}
+func (s *Service) RecordInstallmentPrincipalPayment(ctx context.Context, owner, allocationID string, amount money.Money, mutation ledger.MutationIdentity) (InstallmentPrincipalPaymentResult, error) {
+	if owner == "" {
+		return InstallmentPrincipalPaymentResult{}, ErrNotFound
+	}
+	id, err := s.id()
+	if err != nil {
+		return InstallmentPrincipalPaymentResult{}, err
+	}
+	return s.repo.RecordInstallmentPrincipalPayment(ctx, owner, allocationID, amount, mutation, id, s.now().UTC())
 }
 func newID() (string, error) {
 	b := make([]byte, 18)

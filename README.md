@@ -220,8 +220,24 @@ curl -sS -b /tmp/runway-cookies.txt \
 
 The read-only calculation reuses the baseline projection. It subtracts the configured reserve from the baseline minimum balance, never returns a negative amount, and caps the result at the funding account's reconstructed balance. A baseline already below reserve returns zero with breach details. Credit-card and loan funding return `unsupported_funding_type`; available credit is never liquidity. No hypothetical purchase or result is persisted.
 
+## Credit-card statements and MSI principal lineage
+
+Credit-card statement revisions and one current `PaymentIntent` per logical cycle are available through the authenticated API. Issue 12 also adds 0% MSI `InstallmentPlan`s. A plan must reference the already-posted matching credit-card `liability_charge` that created the purchase principal; creating the plan never posts another charge. Its integer-minor-unit allocations attach to logical card cycles, assign any remainder to the earliest installments, and do not create a cash flow or modify issuer statement facts. Explicit plan/allocation principal-payment records are the only way MSI outstanding principal changes; an ordinary card payment is never inferred to settle MSI.
+
+Create a plan with an idempotency key after posting the original card purchase:
+
+```sh
+curl -sS -b /tmp/runway-cookies.txt \
+  -H 'Origin: http://127.0.0.1:3000' -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: msi-plan-001' \
+  --data '{"description":"Laptop MSI","purchase_transaction_id":"CARD_PURCHASE_TRANSACTION_ID","original_principal_minor":1200000,"currency":"MXN","installment_count":12,"first_cycle_start":"2026-08-01","first_cycle_end":"2026-08-31"}' \
+  http://127.0.0.1:8080/api/v1/credit-cards/CARD_ACCOUNT_ID/installment-plans
+```
+
+Issue 12 deliberately does not project card payments, create `ScheduledCashFlow`s, calculate Safe-to-Spend from cards, settle generic card payments automatically, or add frontend UI.
+
 ## Project status
 
-Issue 9 provides the minimal authenticated Runway frontend: login, dashboard, Safe-to-Spend, projection timeline, accounts, manual transactions, transfers, and ProjectionPolicy setup. Credit-card purchase evaluation, statement/payment prediction, MSI, AI integration, CI/CD, and production deployment are **not implemented**.
+Issue 9 provides the minimal authenticated Runway frontend: login, dashboard, Safe-to-Spend, projection timeline, accounts, manual transactions, transfers, and ProjectionPolicy setup. AI integration, PDF ingestion, interest-bearing installment plans, CI/CD, and production deployment are **not implemented**.
 
 Implemented and future financial behavior must conform to [the financial domain](docs/architecture/financial-domain.md) and [ADR 0001](docs/adr/0001-financial-core-invariants.md).
