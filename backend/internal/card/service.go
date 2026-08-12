@@ -47,6 +47,14 @@ type PaymentIntentSettlementResult struct {
 	Settlement PaymentIntentSettlement
 	Intent     domain.PaymentIntent
 }
+
+// PaymentIntentSummary is a read-only view derived exclusively from explicit
+// settlement lineage. It is deliberately not stored as a second source of truth.
+type PaymentIntentSummary struct {
+	Intent          domain.PaymentIntent
+	SettledAmount   money.Money
+	RemainingAmount money.Money
+}
 type InstallmentPlanSummary struct {
 	Plan                 domain.InstallmentPlan
 	PaidPrincipal        money.Money
@@ -57,6 +65,7 @@ type Repository interface {
 	ListStatements(context.Context, string, string) ([]domain.Statement, error)
 	GetStatement(context.Context, string, string) (domain.Statement, error)
 	GetIntent(context.Context, string, string) (domain.PaymentIntent, error)
+	GetIntentSummary(context.Context, string, string) (PaymentIntentSummary, error)
 	ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date, string, time.Time) (domain.PaymentIntent, error)
 	CancelIntent(context.Context, string, string, time.Time) (domain.PaymentIntent, error)
 	SettleIntent(context.Context, string, PaymentIntentSettlementInput, string, time.Time) (PaymentIntentSettlementResult, error)
@@ -100,6 +109,9 @@ func (s *Service) GetStatement(ctx context.Context, owner, id string) (domain.St
 }
 func (s *Service) GetIntent(ctx context.Context, owner, cycle string) (domain.PaymentIntent, error) {
 	return s.repo.GetIntent(ctx, owner, cycle)
+}
+func (s *Service) GetIntentSummary(ctx context.Context, owner, cycle string) (PaymentIntentSummary, error) {
+	return s.repo.GetIntentSummary(ctx, owner, cycle)
 }
 func (s *Service) ReplaceIntent(ctx context.Context, owner, cycle string, amount money.Money, date financialdate.Date) (domain.PaymentIntent, error) {
 	id, err := s.id()

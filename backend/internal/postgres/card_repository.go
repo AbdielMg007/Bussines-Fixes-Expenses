@@ -140,6 +140,25 @@ func (r *CardRepository) GetStatement(ctx context.Context, owner, id string) (do
 func (r *CardRepository) GetIntent(ctx context.Context, owner, cycle string) (domain.PaymentIntent, error) {
 	return scanIntent(r.pool.QueryRow(ctx, intentSQL+` WHERE owner_id=$1 AND cycle_id=$2`, owner, cycle))
 }
+func (r *CardRepository) GetIntentSummary(ctx context.Context, owner, cycle string) (card.PaymentIntentSummary, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		return card.PaymentIntentSummary{}, err
+	}
+	defer tx.Rollback(ctx)
+	intent, err := scanIntent(tx.QueryRow(ctx, intentSQL+` WHERE owner_id=$1 AND cycle_id=$2`, owner, cycle))
+	if err != nil {
+		return card.PaymentIntentSummary{}, err
+	}
+	summary, err := intentSummary(ctx, tx, owner, intent)
+	if err != nil {
+		return card.PaymentIntentSummary{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return card.PaymentIntentSummary{}, err
+	}
+	return summary, nil
+}
 func (r *CardRepository) ReplaceIntent(ctx context.Context, owner, cycle string, amount money.Money, date financialdate.Date, id string, now time.Time) (domain.PaymentIntent, error) {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
@@ -341,6 +360,26 @@ func createCardFlow(ctx context.Context, tx pgx.Tx, intent domain.PaymentIntent,
 }
 
 const settlementSQL = `SELECT id,owner_id,account_id,cycle_id,intent_id,transfer_id,amount_minor,currency,created_at FROM credit_card_payment_intent_settlements`
+
+type intentSummaryQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func intentSummary(ctx context.Context, q intentSummaryQuerier, owner string, intent domain.PaymentIntent) (card.PaymentIntentSummary, error) {
+	var settledMinor int64
+	if err := q.QueryRow(ctx, `SELECT COALESCE(SUM(amount_minor),0) FROM credit_card_payment_intent_settlements WHERE owner_id=$1 AND intent_id=$2`, owner, intent.ID).Scan(&settledMinor); err != nil {
+		return card.PaymentIntentSummary{}, err
+	}
+	settled, err := money.New(settledMinor, intent.Amount.Currency())
+	if err != nil {
+		return card.PaymentIntentSummary{}, domain.ErrInvalidPaymentIntentSettlement
+	}
+	remaining, err := intent.Amount.Subtract(settled)
+	if err != nil {
+		return card.PaymentIntentSummary{}, domain.ErrInvalidPaymentIntentSettlement
+	}
+	return card.PaymentIntentSummary{Intent: intent, SettledAmount: settled, RemainingAmount: remaining}, nil
+}
 
 func scanIntentSettlement(r row) (card.PaymentIntentSettlement, error) {
 	var x card.PaymentIntentSettlement

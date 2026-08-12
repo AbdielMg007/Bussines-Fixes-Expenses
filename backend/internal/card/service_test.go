@@ -46,6 +46,9 @@ func (f *fakeRepository) GetStatement(context.Context, string, string) (domain.S
 func (f *fakeRepository) GetIntent(context.Context, string, string) (domain.PaymentIntent, error) {
 	return domain.PaymentIntent{}, nil
 }
+func (f *fakeRepository) GetIntentSummary(context.Context, string, string) (PaymentIntentSummary, error) {
+	return PaymentIntentSummary{}, nil
+}
 func (f *fakeRepository) ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date, string, time.Time) (domain.PaymentIntent, error) {
 	return domain.PaymentIntent{}, nil
 }

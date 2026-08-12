@@ -19,6 +19,7 @@ type CardService interface {
 	ListStatements(context.Context, string, string) ([]domain.Statement, error)
 	GetStatement(context.Context, string, string) (domain.Statement, error)
 	GetIntent(context.Context, string, string) (domain.PaymentIntent, error)
+	GetIntentSummary(context.Context, string, string) (app.PaymentIntentSummary, error)
 	ReplaceIntent(context.Context, string, string, money.Money, financialdate.Date) (domain.PaymentIntent, error)
 	CancelIntent(context.Context, string, string) (domain.PaymentIntent, error)
 	SettleIntent(context.Context, string, app.PaymentIntentSettlementInput) (app.PaymentIntentSettlementResult, error)
@@ -173,12 +174,12 @@ func (h cardHandler) getIntent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	x, e := h.cards.GetIntent(r.Context(), o, r.PathValue("cycle_id"))
+	x, e := h.cards.GetIntentSummary(r.Context(), o, r.PathValue("cycle_id"))
 	if e != nil {
 		h.err(w, e)
 		return
 	}
-	writeJSON(w, 200, mapIntent(x))
+	writeJSON(w, 200, mapIntentSummary(x))
 }
 func (h cardHandler) putIntent(w http.ResponseWriter, r *http.Request) {
 	o, ok := h.mutate(w, r)
@@ -443,6 +444,12 @@ func mapStatement(s domain.Statement) map[string]any {
 }
 func mapIntent(x domain.PaymentIntent) map[string]any {
 	return map[string]any{"id": x.ID, "account_id": x.AccountID, "cycle_id": x.CycleID, "amount_minor": x.Amount.MinorUnits(), "currency": x.Amount.Currency().Code(), "planned_date": x.Planned.String(), "status": x.Status, "version": x.Version, "created_at": x.CreatedAt, "updated_at": x.UpdatedAt}
+}
+func mapIntentSummary(summary app.PaymentIntentSummary) map[string]any {
+	response := mapIntent(summary.Intent)
+	response["settled_amount_minor"] = summary.SettledAmount.MinorUnits()
+	response["remaining_amount_minor"] = summary.RemainingAmount.MinorUnits()
+	return response
 }
 func mapInstallmentPlan(plan domain.InstallmentPlan) map[string]any {
 	return map[string]any{"id": plan.ID, "account_id": plan.AccountID, "description": plan.Description, "purchase_transaction_id": plan.PurchaseTransactionID, "original_principal_minor": plan.OriginalPrincipal.MinorUnits(), "currency": plan.OriginalPrincipal.Currency().Code(), "installment_count": plan.InstallmentCount, "first_cycle_id": plan.FirstCycleID, "status": plan.Status, "schedule_version": plan.ScheduleVersion, "created_at": plan.CreatedAt, "updated_at": plan.UpdatedAt}

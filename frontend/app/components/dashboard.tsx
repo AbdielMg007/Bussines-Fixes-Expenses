@@ -15,9 +15,17 @@ type DashboardProps = {
   language: Language;
 };
 
-const statusKeys: Record<SafeToSpend["status"], "safe" | "constrainedByFuture" | "constrainedByFunding" | "belowReserve" | "unsupportedFunding"> = {
-  safe: "safe", constrained_by_future_cash_flow: "constrainedByFuture", constrained_by_funding_balance: "constrainedByFunding", already_below_reserve: "belowReserve", unsupported_funding_type: "unsupportedFunding",
+const statusKeys: Record<SafeToSpend["status"], "safe" | "constrainedByFuture" | "constrainedByFunding" | "belowReserve" | "unsupportedFunding" | "indeterminate"> = {
+  safe: "safe", constrained_by_future_cash_flow: "constrainedByFuture", constrained_by_funding_balance: "constrainedByFunding", already_below_reserve: "belowReserve", unsupported_funding_type: "unsupportedFunding", indeterminate: "indeterminate",
 };
+
+const cardIssueKeys = {
+  card_payment_intent_missing: "cardPaymentIntentMissing",
+  card_payment_intent_needs_review: "cardPaymentIntentNeedsReview",
+  card_payment_due_today_unsettled: "cardPaymentDueTodayUnsettled",
+  card_payment_past_due_unsettled: "cardPaymentPastDueUnsettled",
+  invalid_card_payment_flow: "invalidCardPaymentFlow",
+} as const;
 
 export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorized, language }: DashboardProps) {
   const eligible = accounts.filter((account) => account.status === "active" && (account.type === "cash" || account.type === "bank"));
@@ -78,8 +86,9 @@ export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorize
       <section className="hero-card">
         <p className="eyebrow">{t(language, "safeToSpendToday")}</p>
         {safe ? <>
-          <p className="hero-amount">{formatMoney(safe.safe_to_spend_minor, safe.currency, language)}</p>
+          <p className="hero-amount">{safe.status === "indeterminate" ? t(language, "safeToSpendUnavailable") : formatMoney(safe.safe_to_spend_minor, safe.currency, language)}</p>
           <p className={`status ${safe.status}`}>{t(language, statusKeys[safe.status])}</p>
+          {safe.status === "indeterminate" && <p className="warning">{cardIssueText(language, safe.indeterminate_reason)}</p>}
           {safe.status === "already_below_reserve" && <p className="warning">{t(language, "deficit")}: {formatMoney(safe.deficit_minor, safe.currency, language)}{safe.earliest_breach_date ? ` · ${t(language, "earliestBreach")} ${formatFinancialDate(safe.earliest_breach_date, language)}` : ""}</p>}
         </> : <p className="muted">{t(language, "chooseFunding")}</p>}
         <label className="funding-select">{t(language, "fundingAccount")}
@@ -98,6 +107,7 @@ export function Dashboard({ accounts, refreshToken, onDataChanged, onUnauthorize
 
       {eligible.length === 0 && <section className="panel state-panel"><h2>{t(language, "cashOrBankRequired")}</h2><p className="muted">{t(language, "cashOrBankRequiredDetail")}</p></section>}
       {projection && <ProjectionTimeline language={language} projection={projection} />}
+      {projection && <CardPaymentSummary accounts={accounts} projection={projection} language={language} onUnauthorized={onUnauthorized} />}
     </div>
   );
 }
@@ -140,6 +150,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 function ProjectionTimeline({ projection, language }: { projection: Projection; language: Language }) {
   return <section className="panel timeline-panel">
     <div className="section-heading"><div><p className="eyebrow">{t(language, "baselineProjection")}</p><h2>{t(language, "futureCashTimeline")}</h2></div><p className="muted">{t(language, "opening")} {formatMoney(projection.opening_liquid_balance_minor, projection.currency, language)}</p></div>
+    {projection.completeness === "indeterminate" && <p className="warning">{t(language, "projectionIncomplete")} {projection.issues?.map((issue) => cardIssueText(language, issue.code)).join(" ")}</p>}
     {projection.events.length === 0 ? <p className="empty">{t(language, "noFutureEvents")}</p> : <ol className="timeline">
       {projection.events.map((event) => <li key={event.id} className={event.direction}>
         <time>{formatFinancialDate(event.financial_date, language)}</time>
@@ -150,4 +161,39 @@ function ProjectionTimeline({ projection, language }: { projection: Projection; 
     </ol>}
     {projection.exclusions.length > 0 && <details className="exclusions"><summary>{t(language, "excludedInflows")} ({projection.exclusions.length})</summary><ul>{projection.exclusions.map((item) => <li key={`${item.source_kind}:${item.source_id}`}>{item.label || sourceText(language, item.source_kind)} — {item.reasons.map((reason) => exclusionText(language, reason)).join(", ")}</li>)}</ul></details>}
   </section>;
+}
+
+function cardIssueText(language: Language, reason?: string): string {
+  if (reason && reason in cardIssueKeys) return t(language, cardIssueKeys[reason as keyof typeof cardIssueKeys]);
+  return t(language, "unknownCardProjectionIssue");
+}
+
+function CardPaymentSummary({ accounts, projection, language, onUnauthorized }: Pick<DashboardProps, "accounts" | "language" | "onUnauthorized"> & { projection: Projection }) {
+  type Summary = { account: Account; amountMinor?: number; date?: string; status?: string };
+  const [items, setItems] = useState<Summary[]>([]);
+  useEffect(() => {
+    let live = true;
+    const cards = accounts.filter((account) => account.type === "credit_card");
+    if (cards.length === 0) { setItems([]); return; }
+    void Promise.all(cards.map(async (account) => {
+      const statements = await api.cardStatements(account.id);
+      const current = statements.find((statement) => !statement.superseded_at);
+      if (!current) return { account };
+      try {
+        const intent = await api.paymentIntent(current.cycle_id);
+        // The amount/date come from the backend's projection event, not from a
+        // client-side settlement or card-payment calculation.
+        const event = projection.events.find((candidate) => candidate.source_kind === "credit_card_payment_intent" && candidate.source_id === intent.id);
+        return { account, amountMinor: event?.amount_minor, date: event?.financial_date, status: intent.status };
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 404) return { account };
+        throw cause;
+      }
+    })).then((next) => { if (live) setItems(next); }).catch((cause) => {
+      if (cause instanceof ApiError && cause.status === 401) onUnauthorized();
+    });
+    return () => { live = false; };
+  }, [accounts, language, onUnauthorized, projection]);
+  if (items.length === 0) return null;
+  return <section className="panel timeline-panel card-summary"><h2>{t(language, "upcomingCardPayments")}</h2>{items.map((item) => <div key={item.account.id} className="card-summary-row"><strong>{item.account.name}</strong>{item.amountMinor !== undefined && item.date ? <span>{formatFinancialDate(item.date, language)} · {formatMoney(item.amountMinor, projection.currency, language)}</span> : <span className="warning">{item.status === "needs_review" ? t(language, "cardPaymentIntentNeedsReview") : t(language, "projectionIncomplete")}</span>}</div>)}</section>;
 }

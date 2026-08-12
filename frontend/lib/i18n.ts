@@ -132,6 +132,65 @@ const spanish = {
   cancelled: "Cancelado",
   settled: "Liquidado",
   collected: "Cobrado",
+  indeterminate: "No disponible: falta confirmar un pago de tarjeta.",
+  safeToSpendUnavailable: "No disponible",
+  projectionIncomplete: "La proyección no está completa por un pago de tarjeta pendiente de revisar.",
+  cardPaymentIntentMissing: "Falta la intención de pago de la tarjeta.",
+  cardPaymentIntentNeedsReview: "La intención de pago de la tarjeta requiere revisión.",
+  cardPaymentDueTodayUnsettled: "El pago de la tarjeta vence hoy y aún no está liquidado explícitamente.",
+  cardPaymentPastDueUnsettled: "Hay un pago de tarjeta vencido sin liquidación explícita.",
+  invalidCardPaymentFlow: "El flujo de pago de tarjeta requiere corrección.",
+  unknownCardProjectionIssue: "Hay una condición de tarjeta que impide calcular el efectivo de forma determinista.",
+  cardManagement: "Administración de tarjeta",
+  statements: "Estados de cuenta",
+  noStatements: "Aún no hay estados de cuenta registrados.",
+  registerStatement: "Registrar estado de cuenta",
+  cycleStart: "Inicio del ciclo",
+  cycleEnd: "Fin del ciclo",
+  statementAuthority: "Autoridad del estado",
+  estimated: "Estimado",
+  issued: "Emitido",
+  statementBalance: "Saldo del estado (MXN)",
+  minimumPayment: "Pago mínimo",
+  ppngi: "Pago para no generar intereses",
+  dueDate: "Fecha de vencimiento",
+  cycle: "Ciclo",
+  revision: "Revisión",
+  superseded: "Sustituido",
+  paymentIntent: "Intención de pago",
+  noPaymentIntent: "No hay una intención de pago vigente para este ciclo.",
+  plannedPayment: "Pago planeado (MXN)",
+  plannedDate: "Fecha planeada",
+  needsReview: "Requiere revisión",
+  intentNeedsReviewWarning: "Este pago planeado debe revisarse antes de que Runway pueda calcular efectivo disponible con certeza.",
+  cancelIntentConfirm: "¿Cancelar esta intención de pago? No se realizará ningún pago automáticamente.",
+  unableToLoadCard: "No fue posible cargar la información de la tarjeta.",
+  unableToSaveStatement: "No fue posible guardar el estado de cuenta.",
+  unableToSaveIntent: "No fue posible guardar la intención de pago.",
+  explicitSettlement: "Transferencia para liquidar explícitamente",
+  linkSettlement: "Vincular liquidación",
+  noEligibleCardTransfer: "No hay transferencias publicadas hacia esta tarjeta para vincular. Una transferencia genérica no se vincula automáticamente.",
+  unableToSettleIntent: "No fue posible vincular la liquidación.",
+  createMsi: "Crear plan MSI",
+  noCardCharges: "Primero registra un cargo de pasivo de esta tarjeta.",
+  sourceCharge: "Cargo de tarjeta de origen",
+  description: "Descripción",
+  principal: "Principal (MXN)",
+  installmentCount: "Número de mensualidades",
+  unableToCreateMsi: "No fue posible crear el plan MSI.",
+  msiPlans: "Planes MSI",
+  noMsiPlans: "Aún no hay planes MSI.",
+  paidPrincipal: "Principal pagado",
+  outstandingPrincipal: "Principal pendiente",
+  allocations: "Asignaciones",
+  upcomingCardPayments: "Próximos pagos de tarjeta",
+  intendedAmount: "Monto previsto",
+  explicitlySettledAmount: "Liquidado explícitamente",
+  remainingFutureAmount: "Monto futuro pendiente",
+  fullySettled: "Liquidado por completo",
+  noRemainingPlannedPayment: "No queda ningún pago futuro planeado.",
+  save: "Guardar",
+  cancel: "Cancelar",
   invalidAmount: "Ingresa un monto no negativo con hasta dos decimales.",
   amountOutOfRange: "El monto está fuera del rango admitido por el navegador.",
 } as const;
@@ -144,7 +203,7 @@ const english: { [K in keyof typeof spanish]: string } = {
   baselineProjection: "Baseline projection", futureCashTimeline: "Future cash timeline", opening: "Opening", noFutureEvents: "No future projected events inside this horizon.", excludedInflows: "Excluded future inflows", retry: "Try again", unableToLoadProjection: "Unable to load the projection.", unableToLoadPolicy: "Unable to load ProjectionPolicy. Try again after the service is available.", updatePolicy: "Update ProjectionPolicy before Runway can calculate your cash timeline.",
   projectionSettings: "Projection settings", updateProjection: "Update your cash projection", setupProjection: "Set up your cash projection", policyDescription: "These settings define which cash accounts Runway projects. Nothing is saved until you choose Save.", horizonDays: "Horizon days", cashReserve: "Cash reserve (MXN)", financialTimezone: "Financial timezone", inflowPolicy: "Inflow policy", confirmedInflowsOnly: "Confirmed inflows only", includeExpectedInflows: "Include expected inflows", liquidAccountSelection: "Liquid account selection", allActiveLiquid: "All active cash and bank accounts", chooseSpecificAccounts: "Choose specific accounts", staleSelection: "This saved selection can no longer participate in liquid cash.", unavailableAccount: "Unavailable account", remove: "Remove", createLiquidAccountFirst: "Create an active cash or bank account first.", saveProjectionSettings: "Save projection settings", saving: "Saving…", invalidHorizon: "Horizon must be a whole number of days.", unableToSavePolicy: "Unable to save projection settings.",
   yourLedger: "Your ledger", createFirstAccount: "Create your first account.", createAccount: "Create account", name: "Name", accountType: "Account type", addAccount: "Add account", addingAccount: "Adding…", unableToCreateAccount: "Unable to create account.", noAccountSelected: "No account selected", createAccountToStart: "Create an account to start a ledger.", active: "Active", archived: "Archived", archivedDetail: "Archived — historical records remain read-only.", activeAccount: "Active account", archive: "Archive", archiveConfirm: "Archive {name}? Historical activity stays visible.", unableToArchive: "Unable to archive account.", balance: "Balance", loadingBalance: "Loading balance…", movements: "Movements", noTransactions: "No posted transactions yet.", manualMovement: "Manual movement", postTransaction: "Post a transaction", effect: "Effect", amount: "Amount (MXN)", financialDate: "Financial date", memo: "Memo", post: "Post transaction", posting: "Posting…", retryPending: "Retry pending request", retryPendingFirst: "Retry the pending request first", unableToPost: "Unable to post movement.", retryFailed: "Retry failed.", internalTransfer: "Internal transfer", moveMoneyOrPayCard: "Move money or pay a card", from: "From", to: "To", createTransfer: "Create transfer", moving: "Moving…", unableToTransfer: "Unable to create transfer.",
-  cash: "Cash", bank: "Bank", creditCard: "Credit card", loan: "Loan", assetInflow: "Asset inflow", assetOutflow: "Asset outflow", liabilityCharge: "Liability charge", liabilityPayment: "Liability payment", linkedTransfer: "linked transfer", mandatoryOutflow: "Mandatory obligation outflow", mandatoryManualOutflow: "Mandatory manual outflow", eligibleManualInflow: "Eligible manual inflow", expectedManualInflow: "Expected manual inflow allowed by policy", confirmedReceivable: "Confirmed receivable", expectedReceivable: "Expected receivable allowed by policy", obligationOccurrence: "Scheduled obligation", manualScheduledFlow: "Manual scheduled flow", receivable: "Receivable", uncertainReceivable: "Uncertain receivable", undatedReceivable: "Undated receivable", policyExcludedInflow: "Inflow excluded by policy", cancelled: "Cancelled", settled: "Settled", collected: "Collected", invalidAmount: "Enter a non-negative amount with up to two decimal places.", amountOutOfRange: "Amount is outside the browser-supported range.",
+  cash: "Cash", bank: "Bank", creditCard: "Credit card", loan: "Loan", assetInflow: "Asset inflow", assetOutflow: "Asset outflow", liabilityCharge: "Liability charge", liabilityPayment: "Liability payment", linkedTransfer: "linked transfer", mandatoryOutflow: "Mandatory obligation outflow", mandatoryManualOutflow: "Mandatory manual outflow", eligibleManualInflow: "Eligible manual inflow", expectedManualInflow: "Expected manual inflow allowed by policy", confirmedReceivable: "Confirmed receivable", expectedReceivable: "Expected receivable allowed by policy", obligationOccurrence: "Scheduled obligation", manualScheduledFlow: "Manual scheduled flow", receivable: "Receivable", uncertainReceivable: "Uncertain receivable", undatedReceivable: "Undated receivable", policyExcludedInflow: "Inflow excluded by policy", cancelled: "Cancelled", settled: "Settled", collected: "Collected", indeterminate: "Unavailable: a card payment still needs confirmation.", safeToSpendUnavailable: "Unavailable", projectionIncomplete: "The projection is incomplete because a card payment still needs review.", cardPaymentIntentMissing: "A card payment intent is missing.", cardPaymentIntentNeedsReview: "The card payment intent needs review.", cardPaymentDueTodayUnsettled: "A card payment is due today and has not been explicitly settled.", cardPaymentPastDueUnsettled: "A past-due card payment has not been explicitly settled.", invalidCardPaymentFlow: "The card payment flow needs correction.", unknownCardProjectionIssue: "A card condition prevents a deterministic cash calculation.", cardManagement: "Card management", statements: "Statements", noStatements: "No statements have been registered yet.", registerStatement: "Register statement", cycleStart: "Cycle start", cycleEnd: "Cycle end", statementAuthority: "Statement authority", estimated: "Estimated", issued: "Issued", statementBalance: "Statement balance (MXN)", minimumPayment: "Minimum payment", ppngi: "Payment to avoid interest", dueDate: "Due date", cycle: "Cycle", revision: "Revision", superseded: "Superseded", paymentIntent: "Payment intent", noPaymentIntent: "There is no current payment intent for this cycle.", plannedPayment: "Planned payment (MXN)", plannedDate: "Planned date", needsReview: "Needs review", intentNeedsReviewWarning: "This planned payment must be reviewed before Runway can calculate available cash with certainty.", cancelIntentConfirm: "Cancel this payment intent? No payment will be made automatically.", unableToLoadCard: "Unable to load card information.", unableToSaveStatement: "Unable to save the statement.", unableToSaveIntent: "Unable to save the payment intent.", explicitSettlement: "Transfer to explicitly settle", linkSettlement: "Link settlement", noEligibleCardTransfer: "There are no posted transfers to this card to link. A generic transfer is never linked automatically.", unableToSettleIntent: "Unable to link the settlement.", createMsi: "Create MSI plan", noCardCharges: "Post a liability charge to this card first.", sourceCharge: "Source card charge", description: "Description", principal: "Principal (MXN)", installmentCount: "Installment count", unableToCreateMsi: "Unable to create the MSI plan.", msiPlans: "MSI plans", noMsiPlans: "There are no MSI plans yet.", paidPrincipal: "Paid principal", outstandingPrincipal: "Outstanding principal", allocations: "Allocations", upcomingCardPayments: "Upcoming card payments", intendedAmount: "Intended amount", explicitlySettledAmount: "Explicitly settled", remainingFutureAmount: "Remaining future amount", fullySettled: "Fully settled", noRemainingPlannedPayment: "No planned future payment remains.", save: "Save", cancel: "Cancel", invalidAmount: "Enter a non-negative amount with up to two decimal places.", amountOutOfRange: "Amount is outside the browser-supported range.",
 };
 
 const translations = { es: spanish, en: english } as const;
@@ -175,11 +234,11 @@ export function effectText(language: Language, value: string): string {
 }
 
 export function sourceText(language: Language, value: string): string {
-  return t(language, ({ obligation_occurrence: "obligationOccurrence", manual_scheduled_flow: "manualScheduledFlow", receivable: "receivable" } as Record<string, TranslationKey>)[value] ?? "movements");
+  return t(language, ({ obligation_occurrence: "obligationOccurrence", manual_scheduled_flow: "manualScheduledFlow", receivable: "receivable", credit_card_payment_intent: "paymentIntent" } as Record<string, TranslationKey>)[value] ?? "movements");
 }
 
 export function inclusionText(language: Language, value: string): string {
-  return t(language, ({ mandatory_obligation_outflow: "mandatoryOutflow", mandatory_manual_outflow: "mandatoryManualOutflow", eligible_manual_inflow: "eligibleManualInflow", expected_manual_inflow_allowed_by_policy: "expectedManualInflow", confirmed_receivable: "confirmedReceivable", expected_receivable_allowed_by_policy: "expectedReceivable" } as Record<string, TranslationKey>)[value] ?? "movements");
+  return t(language, ({ mandatory_obligation_outflow: "mandatoryOutflow", mandatory_manual_outflow: "mandatoryManualOutflow", eligible_manual_inflow: "eligibleManualInflow", expected_manual_inflow_allowed_by_policy: "expectedManualInflow", confirmed_receivable: "confirmedReceivable", expected_receivable_allowed_by_policy: "expectedReceivable", authoritative_card_payment_intent: "paymentIntent" } as Record<string, TranslationKey>)[value] ?? "movements");
 }
 
 export function exclusionText(language: Language, value: string): string {

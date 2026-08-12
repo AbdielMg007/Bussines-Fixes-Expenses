@@ -54,6 +54,31 @@ func TestCardHTTPMapsCancelledIntentReplacementToConflict(t *testing.T) {
 	}
 }
 
+func TestGetPaymentIntentIncludesBackendSettlementSummary(t *testing.T) {
+	amount, _ := money.New(280_000, money.MXN())
+	settled, _ := money.New(100_000, money.MXN())
+	remaining, _ := money.New(180_000, money.MXN())
+	date, _ := financialdate.Parse("2026-09-09")
+	intent, err := domain.NewPaymentIntent("intent", "owner-id", "card", "cycle", amount, date, domain.IntentActive, 1, time.Now().UTC(), time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &fakeCardService{getIntentSummary: func(owner, cycle string) (app.PaymentIntentSummary, error) {
+		if owner != "owner-id" || cycle != "cycle" {
+			t.Fatalf("summary owner=%q cycle=%q", owner, cycle)
+		}
+		return app.PaymentIntentSummary{Intent: intent, SettledAmount: settled, RemainingAmount: remaining}, nil
+	}}
+	response := httptest.NewRecorder()
+	newAuthenticatedCardHandler(service).ServeHTTP(response, cardJSONRequest(http.MethodGet, "/api/v1/credit-card-cycles/cycle/payment-intent", ""))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"settled_amount_minor":100000`) || !strings.Contains(response.Body.String(), `"remaining_amount_minor":180000`) {
+		t.Fatalf("summary fields missing: %s", response.Body.String())
+	}
+}
+
 func TestInstallmentPlanAndPrincipalPaymentHTTPValidation(t *testing.T) {
 	calledPlan := false
 	calledPayment := false
@@ -107,10 +132,11 @@ func TestInstallmentPlanAndPrincipalPaymentHTTPValidation(t *testing.T) {
 }
 
 type fakeCardService struct {
-	register      func(string, app.StatementInput) (domain.Statement, error)
-	replaceIntent func(string, string, money.Money, financialdate.Date) (domain.PaymentIntent, error)
-	createPlan    func(string, app.InstallmentPlanInput) (domain.InstallmentPlan, error)
-	recordPayment func(string, string, money.Money, ledger.MutationIdentity) (app.InstallmentPrincipalPaymentResult, error)
+	register         func(string, app.StatementInput) (domain.Statement, error)
+	replaceIntent    func(string, string, money.Money, financialdate.Date) (domain.PaymentIntent, error)
+	getIntentSummary func(string, string) (app.PaymentIntentSummary, error)
+	createPlan       func(string, app.InstallmentPlanInput) (domain.InstallmentPlan, error)
+	recordPayment    func(string, string, money.Money, ledger.MutationIdentity) (app.InstallmentPrincipalPaymentResult, error)
 }
 
 func (f *fakeCardService) SettleIntent(_ context.Context, _ string, _ app.PaymentIntentSettlementInput) (app.PaymentIntentSettlementResult, error) {
@@ -131,6 +157,12 @@ func (f *fakeCardService) GetStatement(context.Context, string, string) (domain.
 }
 func (f *fakeCardService) GetIntent(context.Context, string, string) (domain.PaymentIntent, error) {
 	return domain.PaymentIntent{}, nil
+}
+func (f *fakeCardService) GetIntentSummary(_ context.Context, owner, cycle string) (app.PaymentIntentSummary, error) {
+	if f.getIntentSummary == nil {
+		return app.PaymentIntentSummary{}, errors.New("unexpected GetIntentSummary")
+	}
+	return f.getIntentSummary(owner, cycle)
 }
 func (f *fakeCardService) ReplaceIntent(_ context.Context, owner, cycle string, amount money.Money, date financialdate.Date) (domain.PaymentIntent, error) {
 	if f.replaceIntent == nil {

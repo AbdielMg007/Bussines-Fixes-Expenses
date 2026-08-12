@@ -6,6 +6,7 @@ import { ApiError, NetworkError, api, type Account, type Balance, type Transacti
 import { formatFinancialDate, formatMoney, parseMinorUnits, todayFinancialDate } from "../../lib/format";
 import { accountStatusText, accountTypeText, effectText, t, type Language } from "../../lib/i18n";
 import { useIdempotentMutation } from "../hooks/use-idempotent-mutation";
+import { CreditCardDetail } from "./credit-card";
 
 type AccountsProps = {
   accounts: Account[];
@@ -119,6 +120,7 @@ function AccountDetail({ account, accounts, refreshToken, onDataChanged, onUnaut
       <ManualTransactionForm language={language} account={account} onSuccess={() => { onDataChanged(); void reload(); }} onUnauthorized={onUnauthorized} />
       <TransferForm language={language} account={account} accounts={accounts} onSuccess={() => { onDataChanged(); void reload(); }} onUnauthorized={onUnauthorized} />
     </div>}
+    {account.type === "credit_card" && <CreditCardDetail account={account} transactions={transactions} refreshToken={refreshToken} language={language} onChanged={() => { onDataChanged(); void reload(); }} onUnauthorized={onUnauthorized} />}
     <section className="panel transactions-panel"><div className="section-heading"><div><p className="eyebrow">{t(language, "movements")}</p><h2>{t(language, "postTransaction")}</h2></div></div>
       {loading ? <p className="empty">{t(language, "loadingRunway")}</p> : transactions.length === 0 ? <p className="empty">{t(language, "noTransactions")}</p> : <div className="transaction-list">{transactions.map((transaction) => <TransactionRow language={language} key={transaction.id} transaction={transaction} currency={account.currency} />)}</div>}
     </section>

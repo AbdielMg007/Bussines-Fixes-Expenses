@@ -194,6 +194,73 @@ func TestCardSettlementDatabaseRejectsRawOverpaymentAndInconsistentLifecycle(t *
 	}
 }
 
+func TestPaymentIntentSettlementSummaryUsesOnlyExplicitSettlements(t *testing.T) {
+	pool := newIsolatedTestDatabase(t)
+	ctx := context.Background()
+	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	createTestOwner(t, pool, "owner", now)
+	createTestOwner(t, pool, "other-owner", now)
+	ledgerService, err := applicationledger.NewService(NewLedgerRepository(pool), applicationledger.ServiceOptions{Clock: func() time.Time { return now }, IDGenerator: sequentialIDs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bank := createTestAccount(t, ledgerService, "owner", "Bank", account.Bank())
+	creditCard := createTestAccount(t, ledgerService, "owner", "Card", account.CreditCard())
+	cards := NewCardRepository(pool)
+	intentAmount, _ := money.New(280_000, money.MXN())
+	statement, err := cards.RegisterStatement(ctx, "owner", cardStatementInput(t, "owner", creditCard.ID(), domaincard.Issued, 280_000, "2026-09-09", "summary-statement"), "summary-statement", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := cards.ReplaceIntent(ctx, "owner", statement.CycleID, intentAmount, cardTestDate(t, "2026-09-09"), "summary-intent", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIntentSummary := func(wantSettled, wantRemaining int64) {
+		t.Helper()
+		summary, err := cards.GetIntentSummary(ctx, "owner", statement.CycleID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if summary.Intent.ID != intent.ID || summary.SettledAmount.MinorUnits() != wantSettled || summary.RemainingAmount.MinorUnits() != wantRemaining {
+			t.Fatalf("summary = %+v; settled=%d remaining=%d", summary.Intent, summary.SettledAmount.MinorUnits(), summary.RemainingAmount.MinorUnits())
+		}
+	}
+	assertIntentSummary(0, 280_000)
+
+	settle := func(amount int64, key string) {
+		t.Helper()
+		m, _ := money.New(amount, money.MXN())
+		transfer, err := ledgerService.CreateTransfer(ctx, "owner", bank.ID(), creditCard.ID(), m, cardTestDate(t, "2026-08-10"), key, testIdempotencyKey(t, key+"-transfer"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = cards.SettleIntent(ctx, "owner", appcard.PaymentIntentSettlementInput{IntentID: intent.ID, TransferID: transfer.Transfer.ID(), Mutation: applicationledger.MutationIdentity{Key: testIdempotencyKey(t, key+"-settlement"), Fingerprint: applicationledger.CanonicalFingerprint("v1", "settle_credit_card_payment_intent", "owner", intent.ID, transfer.Transfer.ID())}}, key+"-settlement", now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	settle(100_000, "first")
+	assertIntentSummary(100_000, 180_000)
+
+	// A posted but unlinked bank-to-card transfer is ledger truth only. It must
+	// not enter this explicit PaymentIntent settlement summary.
+	generic, _ := money.New(50_000, money.MXN())
+	if _, err := ledgerService.CreateTransfer(ctx, "owner", bank.ID(), creditCard.ID(), generic, cardTestDate(t, "2026-08-10"), "generic", testIdempotencyKey(t, "generic-transfer")); err != nil {
+		t.Fatal(err)
+	}
+	assertIntentSummary(100_000, 180_000)
+
+	settle(50_000, "second")
+	assertIntentSummary(150_000, 130_000)
+	settle(130_000, "final")
+	assertIntentSummary(280_000, 0)
+
+	if _, err := cards.GetIntentSummary(ctx, "other-owner", statement.CycleID); !errors.Is(err, appcard.ErrNotFound) {
+		t.Fatalf("cross-owner summary error = %v", err)
+	}
+}
+
 func TestCardRepositorySerializesStatementAndIntentRaces(t *testing.T) {
 	pool := newIsolatedTestDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
